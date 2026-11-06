@@ -65,4 +65,4 @@ Esta guía explica la arquitectura de despliegue en la nube para **DocuCSI** y p
 Si necesitas probar el proyecto ahora mismo desde cualquier teléfono o computadora sin configurar cuentas en la nube:
 - Mantén el backend y frontend corriendo localmente.
 - El túnel público activo es:
-  **`https://aa5ceb3f50b499.lhr.life`**
+  **`https://a80fda9216222e.lhr.life`**
