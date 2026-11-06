@@ -1,0 +1,30 @@
+# Node & Vite
+node_modules/
+Frontend/node_modules/
+dist/
+Frontend/dist/
+
+# Python
+__pycache__/
+Backend/__pycache__/
+*/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Vercel
+.vercel
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
