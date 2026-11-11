@@ -221,29 +221,31 @@ class InkAnalyzer:
         min_prop = min(proportions.values()) if len(proportions) > 1 else 1.0
 
         # 6. Criterio Científico Forense de Espectrometría Documental:
-        # Entre dos bolígrafos del MISMO COLOR nominal pero distinta marca/fabricante:
-        # - Tintas cromáticas (azul, rojo, verde, etc.): Las variaciones de fabricante generan
-        #   Delta Hue >= 3°, Delta E*ab >= 4.5 o Delta Norm Chroma >= 0.04.
-        # - Tintas acromáticas/negras: Tienen sutiles diferencias de absorción de carbón o
-        #   subtono (cálido/rojizo vs frío/azulado): Delta E*ab >= 5.5 o Delta Abs >= 0.07.
-        # - En una sola tinta homogénea: El ángulo tonal es idéntico (Delta Hue <= 1°) y Delta E*ab < 4.5.
+        # En una misma tinta manuscrita (ej. un solo bolígrafo azul):
+        # Existen variaciones naturales de presión y grosor de capa entre el centro del trazo y el borde,
+        # pero el tono (Hue) y la cromaticidad normalizada son coherentes.
+        # Para concluir pericialmente la existencia de 2 tintas distintas (adición con segundo bolígrafo):
         s0 = c0_hsv[1]
         s1 = c1_hsv[1]
         is_colored = bool(s0 > 25 or s1 > 25)
 
         if is_colored:
-            chem_diff = bool(
-                (delta_hue >= 3 and delta_e_ab >= 4.0) or
-                (delta_norm_chroma >= 0.15 and delta_e_total >= 7.0 and raw_sil_score >= 0.22) or
-                (delta_e_ab >= 7.5)
-            )
+            # Caso A: Diferencia cromática de matiz clara (ej. azul vs negro, azul vs rojo, delta_hue >= 10)
+            if delta_hue >= 10:
+                chem_diff = bool(delta_e_ab >= 12.0 and raw_sil_score >= 0.30)
+            else:
+                # Caso B: Mismo matiz nominal (ej. bolígrafo azul con lapicero azul o trazo manuscrito).
+                # Para descartar variaciones de presión, sombra o antialiasing de un mismo lapicero azul,
+                # se exige separación cromática pura en (a*, b*) que supere la dispersión intra-trazo (delta_e_ab >= 25.0):
+                chem_diff = bool(delta_e_ab >= 25.0 and raw_sil_score >= 0.40)
         else:
+            # Tintas acromáticas / neutras:
             chem_diff = bool(
-                (delta_e_total >= 6.5 and raw_sil_score >= 0.22) or
-                (delta_norm_chroma >= 0.08)
+                (delta_e_total >= 28.0 and delta_norm_chroma >= 0.15 and raw_sil_score >= 0.40) or
+                (delta_e_total >= 35.0 and raw_sil_score >= 0.35)
             )
 
-        multiple_inks = bool(chem_diff and min_prop >= 0.05 and raw_sil_score >= 0.20)
+        multiple_inks = bool(chem_diff and min_prop >= 0.08 and raw_sil_score >= 0.30)
         num_inks = 2 if multiple_inks else 1
         reported_sil = round(raw_sil_score if multiple_inks else min(raw_sil_score, 0.12), 3)
 

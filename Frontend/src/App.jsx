@@ -29,8 +29,19 @@ export default function App() {
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
   const videoRef = useRef(null);
+  const streamRef = useRef(null);
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // Vincular stream al video cuando la cámara esté activa y el elemento montado
+  useEffect(() => {
+    if (isCameraActive && streamRef.current && videoRef.current) {
+      if (videoRef.current.srcObject !== streamRef.current) {
+        videoRef.current.srcObject = streamRef.current;
+      }
+      videoRef.current.play().catch(err => console.warn("Video play error:", err));
+    }
+  }, [isCameraActive]);
 
   // Cargar muestras y benchmarks al iniciar
   useEffect(() => {
@@ -62,7 +73,7 @@ export default function App() {
       try {
         const constraints = devId 
           ? { video: { deviceId: { exact: devId } } }
-          : { video: { width: { ideal: 1280 }, height: { ideal: 720 } } };
+          : { video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'environment' } };
         stream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err1) {
         console.warn("Intento 1 falló, probando con video universal:", err1);
@@ -70,10 +81,18 @@ export default function App() {
         stream = await navigator.mediaDevices.getUserMedia({ video: true });
       }
 
+      // Detener stream previo si existiera
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+      }
+      streamRef.current = stream;
+
+      // Activamos el estado de cámara para renderizar el visor en pantalla
+      setIsCameraActive(true);
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
-        setIsCameraActive(true);
+        videoRef.current.play().catch(e => console.warn("Play error:", e));
       }
 
       // Enumerar cámaras disponibles (ej. Iriun Webcam, DroidCam o Cámara Integrada)
@@ -93,13 +112,19 @@ export default function App() {
       console.error("No se pudo acceder a la cámara:", err);
       let msg = "No se pudo acceder a la cámara.";
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        msg = "Permisos de cámara bloqueados en el navegador. Haz clic en el ícono del candado o cámara junto a 'localhost:5173' en la barra de direcciones y selecciona 'Permitir'.";
+        msg = "Permisos de cámara bloqueados en el navegador. Haz clic en el ícono del candado o cámara junto a la URL en la barra de direcciones y selecciona 'Permitir'.";
+      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        msg = "No se detectó ninguna cámara de video conectada en este equipo. Puedes continuar el peritaje subiendo una imagen con el botón 'Subir Imagen'.";
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-        msg = "La cámara está ocupada por otra aplicación o Iriun no está conectado aún a tu celular. Asegúrate de tener la app de Iriun abierta en el teléfono y en la PC.";
+        msg = "La cámara está ocupada por otra aplicación o la app de cámara virtual aún no está transmitiendo video.";
       } else {
-        msg = `Error al abrir cámara (${err.name || 'Desconocido'}): ${err.message || 'Verifica la conexión'}.`;
+        msg = `Aviso de cámara (${err.name || 'Desconocido'}): ${err.message || 'Verifica la conexión'}. Puedes usar 'Subir Imagen'.`;
       }
       alert(msg);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
       setIsCameraActive(false);
     }
   };
@@ -113,6 +138,10 @@ export default function App() {
   };
 
   const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
     if (videoRef.current && videoRef.current.srcObject) {
       const tracks = videoRef.current.srcObject.getTracks();
       tracks.forEach(track => track.stop());
@@ -125,8 +154,8 @@ export default function App() {
   const captureCameraFrame = () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth || 800;
-    canvas.height = videoRef.current.videoHeight || 600;
+    canvas.width = videoRef.current.videoWidth || 1280;
+    canvas.height = videoRef.current.videoHeight || 720;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     const b64 = canvas.toDataURL('image/png');
@@ -138,11 +167,11 @@ export default function App() {
   };
 
   const handleFileUpload = (e) => {
-    // If camera is active, stop it before processing the upload to avoid conflicts
+    // Si la cámara está activa por alguna razón, se detiene
     if (isCameraActive) {
       stopCamera();
     }
-    const file = e.target.files[0];
+    const file = e.target?.files?.[0];
     if (file) {
       const reader = new FileReader();
       reader.onload = (uploadEvent) => {
@@ -153,6 +182,8 @@ export default function App() {
       };
       reader.readAsDataURL(file);
     }
+    // Permitir volver a seleccionar el mismo archivo si es necesario
+    if (e.target) e.target.value = '';
   };
 
   const runDualComparison = async () => {
@@ -270,9 +301,20 @@ export default function App() {
             </button>
 
             <button 
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (isCameraActive) {
+                  alert("La cámara en vivo está activa. Captura el documento o presiona 'Detener Cámara' antes de subir una imagen.");
+                  return;
+                }
+                fileInputRef.current?.click();
+              }}
               disabled={isCameraActive}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium bg-white hover:bg-[#F5F2EC] text-[#292524] border border-[#DDD7CD] shadow-sm transition-all ${isCameraActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={isCameraActive ? "La cámara en vivo está activa. Captura o detén la cámara antes de subir una imagen." : "Subir imagen"}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium border shadow-sm transition-all ${
+                isCameraActive 
+                  ? 'bg-stone-200 text-stone-400 border-stone-300 cursor-not-allowed opacity-60' 
+                  : 'bg-white hover:bg-[#F5F2EC] text-[#292524] border-[#DDD7CD] cursor-pointer'
+              }`}
             >
               <Upload className="w-4 h-4" />
               Subir Imagen
@@ -320,7 +362,19 @@ export default function App() {
       {isCameraActive && (
         <div className="bg-[#EAE5DB] border-b border-[#D8D1C3] p-6 flex flex-col items-center">
           <div className="relative rounded-xl overflow-hidden border-2 border-emerald-500 shadow-2xl shadow-emerald-500/25 max-w-2xl w-full">
-            <video ref={videoRef} autoPlay playsInline className="w-full h-auto bg-black" />
+            <video 
+              ref={(el) => {
+                videoRef.current = el;
+                if (el && streamRef.current && el.srcObject !== streamRef.current) {
+                  el.srcObject = streamRef.current;
+                  el.play().catch(e => console.warn("Video play error:", e));
+                }
+              }} 
+              autoPlay 
+              playsInline 
+              muted 
+              className="w-full h-auto bg-black max-h-[480px] object-contain" 
+            />
             <div className="absolute inset-0 pointer-events-none border border-[#8B5E3C]/40 m-6 rounded-lg flex items-center justify-center">
               <div className="border border-dashed border-[#8B5E3C]/60 w-4/5 h-3/5 rounded flex items-center justify-center">
                 <span className="text-xs font-mono text-[#FAF8F5] bg-[#1C1917]/80 px-2 py-1 rounded">Enfoca el documento dentro del marco</span>
@@ -1015,20 +1069,38 @@ export default function App() {
                 {chronology && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold ${
                     chronology.blank_signature_fraud 
-                      ? 'bg-rose-950 text-rose-400 border border-rose-800' 
-                      : 'bg-[#EFECE6] text-[#8B5E3C] border border-[#DDD7CC]'
+                      ? 'bg-rose-100 text-rose-800 border border-rose-300' 
+                      : 'bg-emerald-50 text-emerald-700 border border-emerald-300'
                   }`}>
-                    {chronology.blank_signature_fraud ? 'FIRMA EN BLANCO DETECTADA' : 'SECUENCIA NORMAL'}
+                    {chronology.blank_signature_fraud 
+                      ? 'FIRMA EN BLANCO DETECTADA' 
+                      : chronology.has_intersection 
+                        ? 'SECUENCIA NORMAL (FIRMA SUPERIOR)' 
+                        : 'SECUENCIA NORMAL (SIN CRUCE CONFLICTIVO)'}
                   </span>
                 )}
               </div>
 
               <div className="bg-[#FAF9F5] rounded-lg border border-[#E5E0D6] flex items-center justify-center min-h-[380px] p-2">
                 {chronology?.visualization_b64 ? (
-                  <img src={chronology.visualization_b64} alt="Cruce A*" className="max-h-[440px] object-contain rounded" />
+                  <div className="flex flex-col items-center gap-3 w-full p-2">
+                    <img src={chronology.visualization_b64} alt="Cruce A*" className="max-h-[440px] object-contain rounded border border-[#E5E0D6] shadow-sm" />
+                    <div className="p-3 bg-white rounded-lg border border-[#E2DDD3] text-xs text-[#44403C] max-w-xl text-center shadow-xs">
+                      <strong>Dictamen Cronológico:</strong> {chronology.chronology_verdict}
+                    </div>
+                  </div>
+                ) : chronology ? (
+                  <div className="p-8 text-center max-w-md flex flex-col items-center gap-3">
+                    <CheckCircle2 className="w-12 h-12 text-emerald-600" />
+                    <h4 className="font-semibold text-[#1C1917] text-sm">Continuidad Homogénea Verificada</h4>
+                    <p className="text-xs text-[#78716C] leading-relaxed">
+                      {chronology.chronology_verdict || "Se verificó la continuidad de trazos con el algoritmo A*. No se detectaron cruces de trazo contradictorios ni sobreescrituras."}
+                    </p>
+                  </div>
                 ) : (
-                  <div className="text-center text-[#A8A29E] text-sm">
-                    Ejecuta el peritaje completo para analizar la intersección con el algoritmo A*
+                  <div className="text-center text-[#A8A29E] text-sm p-8 flex flex-col items-center gap-2">
+                    <Cpu className="w-8 h-8 text-[#D8D1C3]" />
+                    <span>Haz clic en <strong>'Ejecutar Peritaje Forense'</strong> (botón superior derecho) para analizar la intersección con el algoritmo A*.</span>
                   </div>
                 )}
               </div>
@@ -1048,11 +1120,15 @@ export default function App() {
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Firma:</span>
-                    <span className="text-[#8B5E3C] font-mono font-bold">{chronology ? chronology.horizontal_path_cost : '--'}</span>
+                    <span className="text-[#8B5E3C] font-mono font-bold">
+                      {chronology && chronology.has_intersection ? chronology.horizontal_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Texto:</span>
-                    <span className="text-orange-400 font-mono font-bold">{chronology ? chronology.vertical_path_cost : '--'}</span>
+                    <span className="text-orange-500 font-mono font-bold">
+                      {chronology && chronology.has_intersection ? chronology.vertical_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
+                    </span>
                   </div>
                   <div className="flex justify-between py-1.5">
                     <span className="text-[#78716C]">Trazo Superior Físico:</span>
