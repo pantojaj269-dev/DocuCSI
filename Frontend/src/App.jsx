@@ -110,22 +110,33 @@ export default function App() {
       }
     } catch (err) {
       console.error("No se pudo acceder a la cámara:", err);
+      // Apagar estado de cámara y liberar stream inmediatamente
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+      setIsCameraActive(false);
+
+      // Si no hay cámara conectada, ofrecer inmediatamente subir imagen desde el equipo
+      if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+        const wantUpload = window.confirm(
+          "No se detectó ninguna cámara conectada en tu equipo.\n\n¿Deseas seleccionar una imagen desde tu computadora para realizar el peritaje?"
+        );
+        if (wantUpload) {
+          setTimeout(() => fileInputRef.current?.click(), 150);
+        }
+        return;
+      }
+
       let msg = "No se pudo acceder a la cámara.";
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         msg = "Permisos de cámara bloqueados en el navegador. Haz clic en el ícono del candado o cámara junto a la URL en la barra de direcciones y selecciona 'Permitir'.";
-      } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-        msg = "No se detectó ninguna cámara de video conectada en este equipo. Puedes continuar el peritaje subiendo una imagen con el botón 'Subir Imagen'.";
       } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
         msg = "La cámara está ocupada por otra aplicación o la app de cámara virtual aún no está transmitiendo video.";
       } else {
         msg = `Aviso de cámara (${err.name || 'Desconocido'}): ${err.message || 'Verifica la conexión'}. Puedes usar 'Subir Imagen'.`;
       }
       alert(msg);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
-      setIsCameraActive(false);
     }
   };
 
@@ -492,16 +503,22 @@ export default function App() {
                 </p>
               </div>
             </div>
-            <div className="flex gap-2 self-end md:self-center shrink-0">
+            <div className="flex flex-wrap gap-2 self-end md:self-center shrink-0">
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="px-4 py-2 rounded-lg bg-white hover:bg-rose-100 text-rose-900 font-semibold text-xs border border-rose-300 transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+              >
+                <Upload className="w-3.5 h-3.5" /> Subir otra Imagen
+              </button>
               <button 
                 onClick={startCamera}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md"
+                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer"
               >
                 Reintentar Cámara
               </button>
               <button 
                 onClick={() => handleSelectSample('check_clean.png')}
-                className="px-4 py-2 rounded-lg bg-[#EFECE6] hover:bg-slate-700 text-[#292524] font-semibold text-xs border border-[#D8D1C3] transition-all"
+                className="px-4 py-2 rounded-lg bg-[#EFECE6] hover:bg-[#DDD7CC] text-[#292524] font-semibold text-xs border border-[#D8D1C3] transition-all cursor-pointer"
               >
                 Probar Cheque Válido
               </button>
