@@ -55,7 +55,6 @@ export default function App() {
   // Manejador de cámara web con soporte para selección de dispositivo (Laptop vs Celular) y fallback tolerante
   const startCamera = async (targetDeviceId = null) => {
     try {
-      setIsCameraActive(true);
       const devId = targetDeviceId || selectedDeviceId;
       
       let stream = null;
@@ -74,6 +73,7 @@ export default function App() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.play();
+        setIsCameraActive(true);
       }
 
       // Enumerar cámaras disponibles (ej. Iriun Webcam, DroidCam o Cámara Integrada)
@@ -138,6 +138,10 @@ export default function App() {
   };
 
   const handleFileUpload = (e) => {
+    // If camera is active, stop it before processing the upload to avoid conflicts
+    if (isCameraActive) {
+      stopCamera();
+    }
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
@@ -267,7 +271,8 @@ export default function App() {
 
             <button 
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium bg-white hover:bg-[#F5F2EC] text-[#292524] border border-[#DDD7CD] shadow-sm transition-all"
+              disabled={isCameraActive}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium bg-white hover:bg-[#F5F2EC] text-[#292524] border border-[#DDD7CD] shadow-sm transition-all ${isCameraActive ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               <Upload className="w-4 h-4" />
               Subir Imagen
@@ -276,6 +281,7 @@ export default function App() {
               ref={fileInputRef} 
               type="file" 
               accept="image/*" 
+              disabled={isCameraActive}
               className="hidden" 
               onChange={handleFileUpload} 
             />
