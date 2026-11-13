@@ -85,37 +85,44 @@ class DocumentProcessor:
     def validate_document(cls, image: np.ndarray) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Validador de Entrada Pericial (Guardia de Percepción del Agente Inteligente):
-        Verifica si la imagen capturada por la cámara corresponde a un soporte documental válido.
-        1. Filtro Anti-Selfie / Personas: Detecta tonos de piel humana en espacio YCrCb.
-        2. Detección de Soporte de Papel: Evalúa el porcentaje de fondo blanco/neutro con baja saturación.
-        3. Detección de Trazos de Tinta: Comprueba presencia de líneas contrastantes.
+        Verifica si la imagen (capturada por cámara o cargada desde archivo) corresponde a un soporte documental válido.
+        1. Detección de Soporte de Papel: Evalúa el porcentaje de fondo blanco/neutro con baja saturación.
+        2. Filtro Anti-Selfie / Rostros Humanos: Detecta presencia predominante de personas sin soporte documental.
+        3. Detección de Trazos de Tinta: Comprueba presencia de líneas contrastantes de grafía.
         """
         h, w = image.shape[:2]
         total_pixels = float(h * w)
-        
-        # 1. Detección de personas / rostros (Tonos de piel en espacio YCrCb)
-        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        # Rango cromático estándar de pigmentación dérmica humana: Cr [133, 173], Cb [77, 127]
-        skin_mask = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
-        skin_ratio = float(np.sum(skin_mask > 0) / total_pixels)
 
-        if skin_ratio >= 0.12:
-            return False, f"RECHAZO DE ENTRADA: Se detecto la presencia de una persona o rostro en el campo visual (densidad de tono de piel: {skin_ratio*100:.1f}%). Por favor enfoque exclusivamente un documento sobre una superficie plana.", {
-                "reason": "FACE_OR_PERSON_DETECTED",
-                "skin_ratio": round(skin_ratio, 3)
-            }
-
-        # 2. Detección de fondo de papel (espacio HSV: baja saturación y alto valor de brillo)
+        # 1. Detección de fondo de papel (espacio HSV: baja saturación y alto valor de brillo)
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         sat = hsv[:, :, 1]
         val = hsv[:, :, 2]
         paper_mask = (sat < 40) & (val > 110)
         paper_ratio = float(np.sum(paper_mask) / total_pixels)
 
-        if paper_ratio < 0.22:
-            return False, f"RECHAZO DE ENTRADA: La imagen no corresponde a un soporte documental (el fondo claro de papel es de apenas {paper_ratio*100:.1f}%). Asegurese de enfocar una hoja de papel bien iluminada.", {
-                "reason": "INSUFFICIENT_PAPER_BACKGROUND",
+        # 2. Detección de tonos de piel dérmica humana (espacio YCrCb combinado con HSV)
+        # Acotamos el espacio dérmico para evitar que escritorios de madera, manteles rojos
+        # o fondos cálidos de mesas se confundan con rostros humanos.
+        ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        skin_mask_ycrcb = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
+        skin_mask_hsv = (sat >= 20) & (sat <= 150) & ((hsv[:, :, 0] <= 20) | (hsv[:, :, 0] >= 165))
+        skin_mask = skin_mask_ycrcb & skin_mask_hsv
+        skin_ratio = float(np.sum(skin_mask > 0) / total_pixels)
+
+        # Si el documento está sobre un escritorio de cualquier color y tiene papel claro, no debe rechazarse.
+        # Solo se rechaza por persona/rostro si el tono dérmico es dominante Y NO existe suficiente soporte de papel
+        if (skin_ratio >= 0.35 and paper_ratio < 0.30) or skin_ratio >= 0.55:
+            return False, f"RECHAZO DE ENTRADA: Se detectó la presencia predominante de una persona o rostro en el encuadre (densidad de tono de piel: {skin_ratio*100:.1f}%). Por favor enfoque o suba exclusivamente un documento sobre una superficie plana.", {
+                "reason": "FACE_OR_PERSON_DETECTED",
+                "skin_ratio": round(skin_ratio, 3),
                 "paper_ratio": round(paper_ratio, 3)
+            }
+
+        if paper_ratio < 0.20:
+            return False, f"RECHAZO DE ENTRADA: La imagen no corresponde a un soporte documental (el fondo claro de papel es de apenas {paper_ratio*100:.1f}%). Asegúrese de enfocar una hoja de papel bien iluminada.", {
+                "reason": "INSUFFICIENT_PAPER_BACKGROUND",
+                "paper_ratio": round(paper_ratio, 3),
+                "skin_ratio": round(skin_ratio, 3)
             }
 
         # 3. Detección de trazos de tinta contrastantes
@@ -123,15 +130,17 @@ class DocumentProcessor:
         ink_ratio = float(cv2.countNonZero(ink_mask) / total_pixels)
 
         if ink_ratio < 0.0015:
-            return False, "RECHAZO DE ENTRADA: Hoja en blanco sin trazos graficos legibles. Coloque un documento que contenga firmas, texto o cifras.", {
+            return False, "RECHAZO DE ENTRADA: Hoja en blanco sin trazos gráficos legibles. Coloque un documento que contenga firmas, texto o cifras.", {
                 "reason": "BLANK_DOCUMENT",
-                "ink_ratio": round(ink_ratio, 4)
+                "ink_ratio": round(ink_ratio, 4),
+                "paper_ratio": round(paper_ratio, 3)
             }
 
         if ink_ratio > 0.65:
-            return False, "RECHAZO DE ENTRADA: Densidad grafica excesiva o textura ambiental compleja. Enfoca directamente el documento.", {
+            return False, "RECHAZO DE ENTRADA: Densidad gráfica excesiva o textura ambiental compleja. Enfoca directamente el documento.", {
                 "reason": "TOO_COMPLEX_SCENE",
-                "ink_ratio": round(ink_ratio, 4)
+                "ink_ratio": round(ink_ratio, 4),
+                "paper_ratio": round(paper_ratio, 3)
             }
 
         return True, "Soporte documental validado correctamente.", {

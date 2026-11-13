@@ -35,6 +35,7 @@ signature_verifier = SignatureVerifier()
 class Base64Payload(BaseModel):
     image_base64: str
     rectify_perspective: bool = True
+    skip_validation: bool = False
 
 @app.get("/api/health")
 def health_check():
@@ -86,15 +87,16 @@ async def analyze_full_document(payload: Base64Payload):
         image = DocumentProcessor.decode_base64(payload.image_base64)
         
         # 0. Validador de Entrada Pericial (Guardia de Percepción)
-        is_valid, val_msg, val_details = DocumentProcessor.validate_document(image)
-        if not is_valid:
-            return {
-                "success": False,
-                "is_document": False,
-                "error_title": "ADVERTENCIA DE PERCEPCION FORENSE",
-                "message": val_msg,
-                "validation_details": val_details
-            }
+        if not payload.skip_validation:
+            is_valid, val_msg, val_details = DocumentProcessor.validate_document(image)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "is_document": False,
+                    "error_title": "ADVERTENCIA DE PERCEPCION FORENSE",
+                    "message": val_msg,
+                    "validation_details": val_details
+                }
 
         # 1. Rectificacion de perspectiva
         rectified = image
@@ -154,13 +156,14 @@ async def compare_dual_signatures_endpoint(payload: Base64Payload):
     """
     try:
         image = DocumentProcessor.decode_base64(payload.image_base64)
-        is_valid, msg, _ = DocumentProcessor.validate_document(image)
-        if not is_valid:
-            return {
-                "success": False,
-                "error_type": "VALIDATION_FAILED",
-                "message": msg
-            }
+        if not payload.skip_validation:
+            is_valid, msg, _ = DocumentProcessor.validate_document(image)
+            if not is_valid:
+                return {
+                    "success": False,
+                    "error_type": "VALIDATION_FAILED",
+                    "message": msg
+                }
 
         ink_mask, _ = DocumentProcessor.extract_ink_mask(image)
         comparison_res = signature_verifier.compare_dual_signatures(image, ink_mask)

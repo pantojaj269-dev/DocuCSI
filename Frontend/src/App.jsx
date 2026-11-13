@@ -21,6 +21,12 @@ export default function App() {
   const [benchmarkData, setBenchmarkData] = useState(null);
   const [validationError, setValidationError] = useState(null);
 
+  // Estados de progreso de subida de imagen
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadFileName, setUploadFileName] = useState('');
+  const [uploadFileSize, setUploadFileSize] = useState('');
+
   const [signatureTabMode, setSignatureTabMode] = useState('document'); // 'document' | 'dual'
   const [dualComparisonResults, setDualComparisonResults] = useState(null);
   const [isComparingDual, setIsComparingDual] = useState(false);
@@ -183,16 +189,63 @@ export default function App() {
       stopCamera();
     }
     const file = e.target?.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (uploadEvent) => {
+    if (!file) return;
+
+    const sizeStr = file.size > 1024 * 1024 
+      ? `${(file.size / (1024 * 1024)).toFixed(2)} MB` 
+      : `${Math.round(file.size / 1024)} KB`;
+
+    setIsUploading(true);
+    setUploadProgress(15);
+    setUploadFileName(file.name);
+    setUploadFileSize(sizeStr);
+    setValidationError(null);
+    setAnalysisResults(null);
+
+    // Animación fluida de progreso visual
+    let progress = 15;
+    const interval = setInterval(() => {
+      progress += Math.floor(Math.random() * 15) + 12;
+      if (progress >= 92) {
+        progress = 92;
+        clearInterval(interval);
+      }
+      setUploadProgress(progress);
+    }, 60);
+
+    const reader = new FileReader();
+
+    reader.onprogress = (evt) => {
+      if (evt.lengthComputable) {
+        const calc = Math.round((evt.loaded / evt.total) * 90);
+        if (calc > progress) {
+          progress = calc;
+          setUploadProgress(calc);
+        }
+      }
+    };
+
+    reader.onload = (uploadEvent) => {
+      clearInterval(interval);
+      setUploadProgress(100);
+      setTimeout(() => {
         setCurrentImageBase64(uploadEvent.target.result);
         setSelectedSample('upload');
         setValidationError(null);
         setAnalysisResults(null);
-      };
-      reader.readAsDataURL(file);
-    }
+        setIsUploading(false);
+        setUploadProgress(0);
+      }, 400);
+    };
+
+    reader.onerror = () => {
+      clearInterval(interval);
+      setIsUploading(false);
+      setUploadProgress(0);
+      alert("Error al leer el archivo de imagen.");
+    };
+
+    reader.readAsDataURL(file);
     // Permitir volver a seleccionar el mismo archivo si es necesario
     if (e.target) e.target.value = '';
   };
@@ -228,7 +281,7 @@ export default function App() {
   };
 
   // Ejecutar Peritaje Forense Completo
-  const runFullAnalysis = async () => {
+  const runFullAnalysis = async (forceSkipValidation = false) => {
     if (!currentImageBase64) {
       alert("Por favor captura o sube una imagen de documento primero.");
       return;
@@ -241,7 +294,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image_base64: currentImageBase64,
-          rectify_perspective: rectifyPerspective
+          rectify_perspective: rectifyPerspective,
+          skip_validation: forceSkipValidation
         })
       });
       const data = await response.json();
@@ -319,22 +373,31 @@ export default function App() {
                 }
                 fileInputRef.current?.click();
               }}
-              disabled={isCameraActive}
+              disabled={isCameraActive || isUploading}
               title={isCameraActive ? "La cámara en vivo está activa. Captura o detén la cámara antes de subir una imagen." : "Subir imagen"}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium border shadow-sm transition-all ${
-                isCameraActive 
+                isCameraActive || isUploading
                   ? 'bg-stone-200 text-stone-400 border-stone-300 cursor-not-allowed opacity-60' 
                   : 'bg-white hover:bg-[#F5F2EC] text-[#292524] border-[#DDD7CD] cursor-pointer'
               }`}
             >
-              <Upload className="w-4 h-4" />
-              Subir Imagen
+              {isUploading ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin text-[#8B5E3C]" />
+                  <span>Subiendo ({uploadProgress}%)...</span>
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4" />
+                  Subir Imagen
+                </>
+              )}
             </button>
             <input 
               ref={fileInputRef} 
               type="file" 
               accept="image/*" 
-              disabled={isCameraActive}
+              disabled={isCameraActive || isUploading}
               className="hidden" 
               onChange={handleFileUpload} 
             />
@@ -368,6 +431,29 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      {/* BARRA DE PROGRESO DE SUBIDA DE IMAGEN */}
+      {isUploading && (
+        <section className="bg-white border-b border-[#E2DDD3] px-6 py-2.5 shadow-xs transition-all">
+          <div className="max-w-7xl mx-auto flex flex-col gap-1.5">
+            <div className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-2 font-medium text-[#292524]">
+                <RefreshCw className="w-3.5 h-3.5 text-[#8B5E3C] animate-spin" />
+                Subiendo documento: <strong className="font-mono text-[#8B5E3C]">{uploadFileName}</strong> ({uploadFileSize})
+              </span>
+              <span className="font-mono font-bold text-xs text-[#8B5E3C]">
+                {uploadProgress < 100 ? `${uploadProgress}%` : '¡Carga completa!'}
+              </span>
+            </div>
+            <div className="w-full h-2 bg-[#EFECE6] rounded-full overflow-hidden border border-[#E0DACE] shadow-inner">
+              <div 
+                className="h-full bg-gradient-to-r from-[#8B5E3C] via-[#A0704C] to-[#292524] rounded-full transition-all duration-150 ease-out"
+                style={{ width: `${uploadProgress}%` }}
+              />
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* VISTA DE CÁMARA ACTIVA (SI ESTÁ ENCENDIDA) */}
       {isCameraActive && (
@@ -462,8 +548,8 @@ export default function App() {
 
           <div className="ml-auto">
             <button
-              onClick={runFullAnalysis}
-              disabled={isAnalyzing || !currentImageBase64}
+              onClick={() => runFullAnalysis(false)}
+              disabled={isAnalyzing || !currentImageBase64 || isUploading}
               className="flex items-center gap-2 px-5 py-2 rounded-lg font-medium text-sm bg-[#1C1917] hover:bg-[#38332F] text-[#FAF8F5] shadow-sm disabled:opacity-50 transition-all cursor-pointer"
             >
               {isAnalyzing ? (
@@ -499,7 +585,7 @@ export default function App() {
                   {validationError.message}
                 </p>
                 <p className="text-xs text-rose-700 mt-1">
-                  💡 <strong>Principio de IA Responsable:</strong> Un sistema forense científico debe validar que el sensor capte un soporte documental antes de emitir un dictamen judicial.
+                  💡 <strong>Principio de IA Responsable:</strong> Un sistema forense científico debe validar que la imagen o sensor capte un soporte documental antes de emitir un dictamen judicial.
                 </p>
               </div>
             </div>
@@ -510,11 +596,20 @@ export default function App() {
               >
                 <Upload className="w-3.5 h-3.5" /> Subir otra Imagen
               </button>
+              {selectedSample === 'camera' && (
+                <button 
+                  onClick={startCamera}
+                  className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1.5"
+                >
+                  <Camera className="w-3.5 h-3.5" /> Reintentar Cámara
+                </button>
+              )}
               <button 
-                onClick={startCamera}
-                className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer"
+                onClick={() => runFullAnalysis(true)}
+                title="Ignorar advertencia de percepción y forzar la ejecución del peritaje forense"
+                className="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer flex items-center gap-1.5"
               >
-                Reintentar Cámara
+                <Zap className="w-3.5 h-3.5" /> Continuar Peritaje de Todos Modos
               </button>
               <button 
                 onClick={() => handleSelectSample('check_clean.png')}
@@ -576,7 +671,31 @@ export default function App() {
               </div>
 
               <div className="bg-[#FAF9F5] rounded-lg border border-[#E5E0D6] flex items-center justify-center min-h-[380px] p-2 relative overflow-hidden">
-                {currentImageBase64 ? (
+                {isUploading ? (
+                  <div className="flex flex-col items-center justify-center p-8 w-full max-w-md mx-auto text-center gap-4 animate-in fade-in">
+                    <div className="relative">
+                      <div className="w-16 h-16 rounded-2xl bg-[#EFECE6] border border-[#DDD7CD] flex items-center justify-center shadow-inner">
+                        <Upload className="w-8 h-8 text-[#8B5E3C] animate-bounce" />
+                      </div>
+                      <div className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#8B5E3C] text-white flex items-center justify-center text-[10px] font-bold shadow">
+                        {uploadProgress}%
+                      </div>
+                    </div>
+                    <div>
+                      <h4 className="font-semibold text-sm text-[#1C1917] truncate max-w-xs">{uploadFileName}</h4>
+                      <p className="text-xs text-[#78716C] mt-0.5">Tamaño: {uploadFileSize} • Subiendo documento al visor...</p>
+                    </div>
+                    <div className="w-full bg-[#E5DFD3] h-2.5 rounded-full overflow-hidden shadow-inner border border-[#D5CEC2]">
+                      <div 
+                        className="h-full bg-gradient-to-r from-[#8B5E3C] via-[#A0704C] to-[#292524] rounded-full transition-all duration-150 ease-out"
+                        style={{ width: `${uploadProgress}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] font-mono text-[#8B5E3C] bg-[#EFECE6] px-3 py-1 rounded-full border border-[#DDD7CD]">
+                      {uploadProgress < 100 ? 'Procesando soporte documental...' : '¡Imagen cargada correctamente!'}
+                    </span>
+                  </div>
+                ) : currentImageBase64 ? (
                   <img 
                     src={analysisResults?.rectified_image_b64 || currentImageBase64} 
                     alt="Documento" 
