@@ -3,7 +3,6 @@ FROM python:3.11-slim
 # Evitar prompts interactivos
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
 
 # Instalar dependencias del sistema para OpenCV y C++
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,7 +17,7 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Instalar torch optimizado para CPU y dependencias
-RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
+RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copiar el código del Backend

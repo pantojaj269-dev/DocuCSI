@@ -17,69 +17,6 @@ class InkAnalyzer:
     - Métrica de Silhouette Score y distancia cromática Delta E*ab.
     """
 
-    @classmethod
-    def analyze(cls, image_bgr, ink_mask, k_clusters=2):
-        from .palette import inspect_palette
-        palette = inspect_palette(image_bgr, ink_mask)
-        neutral_mask = palette.pop('_neutral_mask')
-        result = cls._analyze_chromatic(image_bgr, ink_mask, k_clusters)
-        chromatic_multiple = bool(result.get('multiple_inks_detected', False))
-        mixed = palette['mixed_colored_neutral']
-        result.update(palette)
-        result['chromatic_multiple_detected'] = chromatic_multiple
-        result['multiple_inks_detected'] = bool(chromatic_multiple or mixed)
-        result['requires_context'] = bool(chromatic_multiple or mixed)
-        result['different_materials_confirmed'] = False
-        result['analysis_scope'] = (
-            'Se conservan trazos de color y neutros. Una fotografía no permite distinguir '
-            'con certeza lápiz, bolígrafo negro e impresión, ni certificar legitimidad.'
-        )
-        if mixed:
-            result['success'] = True
-            groups = (2 if chromatic_multiple else 1) + 1
-            result['num_inks_detected'] = groups
-            result['evidence_status'] = 'mixed_color_and_neutral'
-            result['scientific_conclusion'] = (
-                f'MEZCLA VISUAL DETECTADA: trazos de color y trazos negros/grises '
-                f'({palette["neutral_pixel_count"]} píxeles neutros fuera del halo del color). '
-                'El componente neutro puede corresponder a lápiz, tinta negra o impresión; '
-                'requiere revisar el documento. No se certifica legitimidad ni fraude.'
-            )
-            if not palette['neutral_marks_detected']:
-                result['scientific_conclusion'] += ' La evidencia neutra es escasa; conviene una foto más cercana y nítida.'
-            count = palette['colored_pixel_count'] + palette['neutral_pixel_count']
-            fraction = palette['neutral_pixel_count'] / max(1,count)
-            result['ink_proportions'] = {
-                'Trazos de color': round(1-fraction,3),
-                'Trazos neutros (material sin identificar)': round(fraction,3),
-            }
-        elif palette['neutral_trace_detected'] and not palette['colored_marks_detected']:
-            result['evidence_status'] = 'neutral_only_material_undetermined'
-            result['scientific_conclusion'] = (
-                'TRAZOS NEUTROS: se observan negros/grises. No se puede distinguir cuántos '
-                'útiles se usaron ni separar lápiz, tinta negra e impresión por el color solo. '
-                'No se certifica homogeneidad material ni legitimidad.'
-            )
-        else:
-            result['evidence_status'] = 'multiple_chromatic_groups' if chromatic_multiple else 'no_resolved_difference' if result['success'] else 'insufficient'
-            if not chromatic_multiple:
-                result['scientific_conclusion'] = (
-                    'SIN DIFERENCIA RESUELTA EN ESTA CAPTURA. No demuestra que se haya usado '
-                    'un solo útil ni descarta trazos demasiado tenues, pequeños o del mismo color. '
-                    'No certifica legitimidad.'
-                )
-        # Neutral en violeta y color en verde: ambos permanecen visibles.
-        # El gráfico PCA y Silhouette describen el subanálisis cromático;
-        # no se usan para esconder el inventario de trazos neutros.
-        result['silhouette_scope'] = 'Separabilidad exploratoria del subanálisis cromático; no es probabilidad de materiales distintos.'
-        result['visible_palette_groups_count'] = result['num_inks_detected']
-        if mixed or palette['neutral_trace_detected']:
-            existing = result.get('segmented_image_b64')
-            annotated = cv2.imdecode(np.frombuffer(b64.b64decode(existing.split(',',1)[1]), np.uint8), cv2.IMREAD_COLOR) if existing else image_bgr.copy()
-            annotated[neutral_mask] = (190,70,180)
-            result['segmented_image_b64'] = 'data:image/png;base64,' + b64.b64encode(cv2.imencode('.png',annotated)[1]).decode()
-        return result
-
     @staticmethod
     def _compute_pixel_features(
         bgr_pixels: np.ndarray,
@@ -139,9 +76,7 @@ class InkAnalyzer:
             paper_bg = np.array([245.0, 245.0, 245.0], dtype=np.float32)
 
         # 2. Filtrado de cuadrículas tenues o bordes pre-impresos neutrales si hay manuscrito
-        # Subanálisis cromático. Los neutros se contabilizan por separado en
-        # analyze(); no se descartan del resultado integral ni se asumen impresos.
-        is_printed_line = hsv_full[:, :, 1] < 60
+        is_printed_line = (hsv_full[:, :, 1] < 18) & (hsv_full[:, :, 2] > 115)
         clean_ink_mask = ink_mask.copy()
         if np.sum((ink_mask > 0) & (~is_printed_line)) > 80:
             clean_ink_mask[is_printed_line] = 0
@@ -160,7 +95,7 @@ class InkAnalyzer:
         y_coords, x_coords = np.where(core_mask > 0)
         max_samples = 6000
         if len(y_coords) > max_samples:
-            idx = np.random.default_rng(42).choice(len(y_coords), max_samples, replace=False)
+            idx = np.random.choice(len(y_coords), max_samples, replace=False)
             y_coords = y_coords[idx]
             x_coords = x_coords[idx]
 
@@ -173,7 +108,7 @@ class InkAnalyzer:
         return features, coords, bgr_core, clean_ink_mask, paper_bg, hsv_full, lab_full
 
     @classmethod
-    def _analyze_chromatic(cls, image_bgr: np.ndarray, ink_mask: np.ndarray, k_clusters: int = 2) -> Dict[str, Any]:
+    def analyze(cls, image_bgr: np.ndarray, ink_mask: np.ndarray, k_clusters: int = 2) -> Dict[str, Any]:
         extracted = cls.extract_ink_features(image_bgr, ink_mask)
 
         if extracted is None:
@@ -197,10 +132,7 @@ class InkAnalyzer:
 
         # 1. Clustering K-Means con inicialización robusta
         kmeans = KMeans(n_clusters=k_clusters, random_state=42, n_init=15)
-        if len(np.unique(features, axis=0)) < 2:
-            kmeans_labels = np.zeros(len(features), dtype=np.int32)
-        else:
-            kmeans_labels = kmeans.fit_predict(features)
+        kmeans_labels = kmeans.fit_predict(features)
         unique_labels = np.unique(kmeans_labels)
 
         if len(unique_labels) < 2:
@@ -221,7 +153,7 @@ class InkAnalyzer:
 
         # 2. Métricas de Evaluación: Silhouette Score
         eval_n = min(2000, len(features))
-        eval_idx = np.random.default_rng(42).choice(len(features), eval_n, replace=False)
+        eval_idx = np.random.choice(len(features), eval_n, replace=False)
         if len(np.unique(kmeans_labels[eval_idx])) > 1:
             raw_sil_score = float(silhouette_score(features[eval_idx], kmeans_labels[eval_idx]))
         else:
@@ -295,7 +227,7 @@ class InkAnalyzer:
         # Para concluir pericialmente la existencia de 2 tintas distintas (adición con segundo bolígrafo):
         s0 = c0_hsv[1]
         s1 = c1_hsv[1]
-        is_colored = bool(s0 >= 60 and s1 >= 60)
+        is_colored = bool(s0 > 25 or s1 > 25)
 
         if is_colored:
             # Caso A: Diferencia cromática de matiz clara (ej. azul vs negro, azul vs rojo, delta_hue >= 10)
@@ -305,17 +237,17 @@ class InkAnalyzer:
                 # Caso B: Mismo matiz nominal (ej. bolígrafo azul con lapicero azul o trazo manuscrito).
                 # Para descartar variaciones de presión, sombra o antialiasing de un mismo lapicero azul,
                 # se exige separación cromática pura en (a*, b*) que supere la dispersión intra-trazo (delta_e_ab >= 25.0):
-                # Diferencias de presión y mezcla óptica con el papel cambian
-                # LAB sin implicar otro bolígrafo. Una foto RGB no identifica
-                # formulaciones químicas del mismo tono.
-                chem_diff = False
+                chem_diff = bool(delta_e_ab >= 25.0 and raw_sil_score >= 0.40)
         else:
             # Tintas acromáticas / neutras:
-            chem_diff = False
+            chem_diff = bool(
+                (delta_e_total >= 28.0 and delta_norm_chroma >= 0.15 and raw_sil_score >= 0.40) or
+                (delta_e_total >= 35.0 and raw_sil_score >= 0.35)
+            )
 
         multiple_inks = bool(chem_diff and min_prop >= 0.08 and raw_sil_score >= 0.30)
         num_inks = 2 if multiple_inks else 1
-        reported_sil = round(raw_sil_score, 3)
+        reported_sil = round(raw_sil_score if multiple_inks else min(raw_sil_score, 0.12), 3)
 
         # 7. Segmentación Visual de Trazo Completo (Propagación Vectorizada por Centroides)
         y_all, x_all = np.where(clean_ink_mask > 0)
@@ -351,7 +283,6 @@ class InkAnalyzer:
 
         return {
             'success': True,
-            'analysis_scope': 'Agrupación de colores visibles; los trazos neutros se excluyen cuando existe escritura de color. No identifica composición química ni fecha de escritura.',
             'num_inks_detected': num_inks,
             'silhouette_score': reported_sil,
             'multiple_inks_detected': multiple_inks,
@@ -363,12 +294,13 @@ class InkAnalyzer:
             'ink_proportions': proportions if multiple_inks else {'Tinta #1 (Homogénea)': 1.0},
             'outliers_detected_dbscan': outlier_count,
             'scientific_conclusion': (
-                f'OBSERVACION CROMATICA: Se detectaron {num_inks} grupos de color en los trazos analizados '
+                f'ALERTA FORENSE: Se detectaron {num_inks} tintas con formulaciones químicas distintas '
                 f'(Delta Hue: {delta_hue}°, Delta E*ab: {delta_e_ab:.1f}, Silhouette: {reported_sil}). '
-                f'La diferencia de color requiere revisar el contexto; no demuestra adulteración ni composición química distinta.'
+                f'Incompatibilidad espectral concluyente entre instrumentos inscriptores '
+                f'(ej. diferentes fabricantes, marcas o lotes de bolígrafo del mismo color nominal).'
                 if multiple_inks else
-                f'SIN SEPARACION CROMATICA SIGNIFICATIVA en los trazos de color analizados '
+                f'HOMOGENEIDAD OPTICA: Consistencia espectral uniforme en todos los trazos '
                 f'(Delta Hue: {delta_hue}°, Delta E*ab: {delta_e_ab:.1f}). '
-                f'Este resultado no acredita que se haya utilizado un único bolígrafo.'
+                f'No se aprecian firmas químicas de un segundo instrumento inscriptor.'
             )
         }

@@ -25,24 +25,3 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #BAAF9F;
 }
-
-@media print {
-  @page { margin: 15mm; }
-  body { background: white; }
-  body * { visibility: hidden; }
-  .forensic-report, .forensic-report * { visibility: visible; }
-  .forensic-report {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 100%;
-    max-width: none;
-    padding: 0;
-    border: 0;
-    box-shadow: none;
-  }
-  .forensic-report button { display: none; }
-  .forensic-report pre { max-height: none; overflow: visible; overflow-wrap: anywhere; }
-  .forensic-report code { overflow-wrap: anywhere; white-space: normal; }
-  header { display: none !important; }
-}

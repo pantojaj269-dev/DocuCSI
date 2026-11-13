@@ -1,59 +1,23 @@
 import cv2
 import numpy as np
 import base64
-from io import BytesIO
-from PIL import Image, UnidentifiedImageError
 from typing import Tuple, Dict, Any, Optional
 
 class DocumentProcessor:
     @staticmethod
     def decode_image(image_bytes: bytes) -> np.ndarray:
-        if not image_bytes:
-            raise ValueError('La imagen está vacía.')
-        # Consultar dimensiones antes de que OpenCV asigne el bitmap entero.
-        try:
-            with Image.open(BytesIO(image_bytes)) as header:
-                if header.width * header.height > 24_000_000:
-                    raise ValueError('La imagen supera 24 megapíxeles. Sube una versión más pequeña.')
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-            raise ValueError('No se pudo leer una imagen compatible o sus dimensiones son excesivas.') from exc
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError('No se pudo decodificar la imagen enviada.')
-        if img.shape[0] * img.shape[1] > 24_000_000:
-            raise ValueError('La imagen supera 24 megapíxeles. Sube una versión más pequeña.')
         return img
 
     @staticmethod
     def decode_base64(b64_str: str) -> np.ndarray:
         if ',' in b64_str:
             b64_str = b64_str.split(',')[1]
-        img_bytes = DocumentProcessor.decode_base64_bytes(b64_str)
+        img_bytes = base64.b64decode(b64_str)
         return DocumentProcessor.decode_image(img_bytes)
-
-    @staticmethod
-    def decode_base64_bytes(b64_str: str) -> bytes:
-        if len(b64_str) > 22_000_000:
-            raise ValueError('La imagen es demasiado pesada. El máximo es 16 MB.')
-        encoded = b64_str.split(',', 1)[-1]
-        try:
-            image_bytes = base64.b64decode(encoded, validate=True)
-        except (ValueError, base64.binascii.Error) as exc:
-            raise ValueError('El contenido de la imagen no es Base64 válido.') from exc
-        if len(image_bytes) > 16_000_000:
-            raise ValueError('La imagen es demasiado pesada. El máximo es 16 MB.')
-        return image_bytes
-
-    @staticmethod
-    def prepare_for_analysis(image: np.ndarray) -> np.ndarray:
-        h, w = image.shape[:2]
-        if min(h, w) < 64:
-            raise ValueError('La imagen debe medir al menos 64 píxeles por lado.')
-        scale = min(1.0, 1600.0 / max(h, w))
-        if scale < 1.0:
-            return cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
-        return image
 
     @staticmethod
     def encode_base64(img: np.ndarray, format: str = '.png') -> str:
@@ -87,10 +51,7 @@ class DocumentProcessor:
         for c in contours:
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            bx, by, bw, bh = cv2.boundingRect(approx)
-            if (len(approx) == 4 and cv2.isContourConvex(approx)
-                    and cv2.contourArea(c) > (w * h * 0.50)
-                    and bw >= w * .65 and bh >= h * .65):
+            if len(approx) == 4 and cv2.contourArea(c) > (w * h * 0.15):
                 doc_contour = approx
                 break
 
@@ -108,8 +69,6 @@ class DocumentProcessor:
         height_a = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
         height_b = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
         max_h = max(int(height_a), int(height_b))
-        if min(max_w, max_h) < 64:
-            return image, False
 
         dst = np.array([
             [0, 0],
@@ -136,17 +95,13 @@ class DocumentProcessor:
         
         # 1. Detección de personas / rostros (Tonos de piel en espacio YCrCb)
         ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
-        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         # Rango cromático estándar de pigmentación dérmica humana: Cr [133, 173], Cb [77, 127]
         skin_mask = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
-        # Papel crema e iluminación cálida también entran en YCrCb de piel.
-        # No tratarlos como personas: exigir saturación cromática apreciable.
-        skin_mask[hsv[:, :, 1] < 55] = 0
         skin_ratio = float(np.sum(skin_mask > 0) / total_pixels)
 
         if skin_ratio >= 0.12:
-            return False, f"RECHAZO DE ENTRADA: Predominan colores de fondo incompatibles con el soporte claro esperado ({skin_ratio*100:.1f}%). Enfoca el documento con iluminación neutra. Este filtro cromático no detecta rostros.", {
-                "reason": "UNSUITABLE_BACKGROUND_COLORS",
+            return False, f"RECHAZO DE ENTRADA: Se detecto la presencia de una persona o rostro en el campo visual (densidad de tono de piel: {skin_ratio*100:.1f}%). Por favor enfoque exclusivamente un documento sobre una superficie plana.", {
+                "reason": "FACE_OR_PERSON_DETECTED",
                 "skin_ratio": round(skin_ratio, 3)
             }
 
@@ -191,49 +146,33 @@ class DocumentProcessor:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # 1. Umbral de Otsu global
-        _, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        otsu_val, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
         # 2. Umbral adaptativo local (para compensar sombras en fotos reales de celular)
         thresh_adapt = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 14
         )
         
-        # El umbral absoluto anterior borraba lápiz claro junto a tinta oscura.
-        # Estimar el soporte local permite retener trazos con contraste >= 8
-        # niveles incluso si el píxel de grafito es más claro que 195.
-        background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, np.ones((31, 31), np.uint8))
-        contrast = background.astype(np.int16) - gray.astype(np.int16)
-        candidates = cv2.bitwise_or(thresh_otsu, thresh_adapt) > 0
-        mask = ((contrast >= 8) & candidates).astype(np.uint8) * 255
+        # 3. Techo estricto de oscuridad: ningun pixel con brillo cercano al papel blanco/cuaderno es tinta
+        max_ink_gray = min(195, int(otsu_val + 20))
+        valid_dark_pixels = (gray < max_ink_gray).astype(np.uint8) * 255
+        
+        mask = cv2.bitwise_and(cv2.bitwise_or(thresh_otsu, thresh_adapt), valid_dark_pixels)
+        
+        # 4. Apertura morfologica para eliminar cuadriculas tenues de 1px y ruido de camara
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
         
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-        # No abrir con un kernel de 2 px: destruye escritura a lápiz de 1 px.
-        min_size = 8
-        keep = stats[:, cv2.CC_STAT_AREA] >= min_size
-        keep[0] = False
-        clean_mask = (keep[labels].astype(np.uint8) * 255)
+        min_size = 20
+        clean_mask = np.zeros_like(mask)
+        for i in range(1, num_labels):
+            if stats[i, cv2.CC_STAT_AREA] >= min_size:
+                clean_mask[labels == i] = 255
 
         return clean_mask, gray
 
 
-
-    @staticmethod
-    def assess_capture(image: np.ndarray, ink_mask: np.ndarray) -> Dict[str, Any]:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        focus = float(cv2.Laplacian(gray, cv2.CV_32F).var())
-        background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, np.ones((31,31),np.uint8))
-        contrasts = (background.astype(np.int16)-gray.astype(np.int16))[ink_mask > 0]
-        median_contrast = float(np.median(contrasts)) if len(contrasts) else 0.0
-        warnings = []
-        if max(gray.shape) < 700:
-            warnings.append('Resolución reducida: los trazos pequeños o tenues pueden no resolverse.')
-        if focus < 25:
-            warnings.append('Nitidez baja según el criterio exploratorio; repetir con mejor enfoque puede revelar trazos omitidos.')
-        if median_contrast < 20:
-            warnings.append('Contraste de escritura bajo; una ausencia de diferencias no permite descartar otro material.')
-        return {'focus_indicator': round(focus,2), 'median_stroke_contrast': round(median_contrast,2),
-                'warnings': warnings, 'status': 'capture_requires_review' if warnings else 'no_capture_warning',
-                'scope': 'Indicadores exploratorios de captura, no una validación pericial.'}
 
     @staticmethod
     def skeletonize(mask: np.ndarray) -> np.ndarray:

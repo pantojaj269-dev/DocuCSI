@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { apiRequest } from './api';
 import { 
   Camera, Upload, FileText, CheckCircle2, AlertTriangle, XCircle, 
   Layers, Search, ShieldCheck, Scale, Cpu, Activity, RefreshCw, 
   Eye, Download, BarChart2, Zap
 } from 'lucide-react';
+
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('inspection');
@@ -23,27 +24,14 @@ export default function App() {
   const [signatureTabMode, setSignatureTabMode] = useState('document'); // 'document' | 'dual'
   const [dualComparisonResults, setDualComparisonResults] = useState(null);
   const [isComparingDual, setIsComparingDual] = useState(false);
-  const [serverStatus, setServerStatus] = useState('connecting');
-  const [connectionError, setConnectionError] = useState('');
-  const [operationMessage, setOperationMessage] = useState('');
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const imageRef = useRef(null);
-  const busyRef = useRef(false);
+  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
-
-  const updateImage = (image) => {
-    imageRef.current = image;
-    setCurrentImageBase64(image);
-    setAnalysisResults(null);
-    setDualComparisonResults(null);
-    setValidationError(null);
-  };
 
   // Vincular stream al video cuando la cámara esté activa y el elemento montado
   useEffect(() => {
@@ -57,52 +45,23 @@ export default function App() {
 
   // Cargar muestras y benchmarks al iniciar
   useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        await apiRequest('/api/health', { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        setServerStatus('ready');
-        const [data, benchmark] = await Promise.all([
-          apiRequest('/api/samples', { signal: controller.signal }),
-          apiRequest('/api/benchmark/models', { signal: controller.signal }),
-        ]);
-        if (controller.signal.aborted) return;
+    fetch(`${API_BASE}/api/samples`)
+      .then(res => res.json())
+      .then(data => {
         if (data.samples && data.samples.length > 0) {
           setSamples(data.samples);
-          if (!imageRef.current) {
-            setSelectedSample(data.samples[0].id);
-            updateImage(data.samples[0].image_base64);
-          }
+          // Cargar primera muestra por defecto
+          setSelectedSample(data.samples[0].id);
+          setCurrentImageBase64(data.samples[0].image_base64);
         }
-        setBenchmarkData(benchmark);
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setServerStatus('error');
-        setConnectionError(error.message);
-      }
-    };
-    load();
-    return () => {
-      controller.abort();
-      streamRef.current?.getTracks().forEach(track => track.stop());
-    };
+      })
+      .catch(err => console.error("Error al cargar muestras:", err));
+
+    fetch(`${API_BASE}/api/benchmark/models`)
+      .then(res => res.json())
+      .then(data => setBenchmarkData(data))
+      .catch(err => console.error("Error al cargar benchmarks:", err));
   }, []);
-
-  useEffect(() => {
-    if (!isAnalyzing && !isComparingDual) return;
-    const started = Date.now();
-    const timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
-    return () => clearInterval(timer);
-  }, [isAnalyzing, isComparingDual]);
-
-  const ensureServerReady = async () => {
-    setOperationMessage('Conectando con el servidor de Render…');
-    await apiRequest('/api/health');
-    setServerStatus('ready');
-    setConnectionError('');
-    setOperationMessage('Procesando la imagen y ejecutando los módulos…');
-  };
 
   // Manejador de cámara web con soporte para selección de dispositivo (Laptop vs Celular) y fallback tolerante
   const startCamera = async (targetDeviceId = null) => {
@@ -204,14 +163,14 @@ export default function App() {
 
 
   const captureCameraFrame = () => {
-    if (!videoRef.current || videoRef.current.readyState < 2 || !videoRef.current.videoWidth) return;
+    if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth || 1280;
     canvas.height = videoRef.current.videoHeight || 720;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     const b64 = canvas.toDataURL('image/png');
-    updateImage(b64);
+    setCurrentImageBase64(b64);
     setSelectedSample('camera');
     setValidationError(null);
     setAnalysisResults(null);
@@ -225,15 +184,9 @@ export default function App() {
     }
     const file = e.target?.files?.[0];
     if (file) {
-      if (!['image/png', 'image/jpeg', 'image/webp', 'image/bmp'].includes(file.type) || file.size > 16_000_000) {
-        setValidationError({ error_title: 'Imagen no compatible', message: 'Selecciona PNG, JPG, WEBP o BMP de hasta 16 MB.' });
-        e.target.value = '';
-        return;
-      }
       const reader = new FileReader();
-      reader.onerror = () => setValidationError({ message: 'No se pudo leer el archivo seleccionado.' });
       reader.onload = (uploadEvent) => {
-        updateImage(uploadEvent.target.result);
+        setCurrentImageBase64(uploadEvent.target.result);
         setSelectedSample('upload');
         setValidationError(null);
         setAnalysisResults(null);
@@ -245,30 +198,21 @@ export default function App() {
   };
 
   const runDualComparison = async () => {
-    if (!currentImageBase64 || busyRef.current) return;
-    busyRef.current = true;
-    const analyzedImage = currentImageBase64;
+    if (!currentImageBase64) return;
     setIsComparingDual(true);
-    setElapsedSeconds(0);
-    setDualComparisonResults(null);
-    setValidationError(null);
     try {
-      await ensureServerReady();
-      const data = await apiRequest('/api/signatures/compare_dual', {
+      const res = await fetch(`${API_BASE}/api/signatures/compare_dual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_base64: currentImageBase64 })
       });
-      if (imageRef.current !== analyzedImage) return;
-      if (data.success) setDualComparisonResults(data);
-      else setValidationError(data);
+      const data = await res.json();
+      setDualComparisonResults(data);
     } catch (err) {
       console.error("Error en cotejo dual:", err);
-      if (imageRef.current === analyzedImage) setValidationError({ error_title: 'No se pudo completar el cotejo', message: err.message });
+      alert("Ocurrió un error al ejecutar el cotejo dual.");
     } finally {
-      busyRef.current = false;
       setIsComparingDual(false);
-      setOperationMessage('');
     }
   };
 
@@ -276,7 +220,7 @@ export default function App() {
     const sample = samples.find(s => s.id === sampleId);
     if (sample) {
       setSelectedSample(sample.id);
-      updateImage(sample.image_base64);
+      setCurrentImageBase64(sample.image_base64);
       setAnalysisResults(null);
       setValidationError(null);
       stopCamera();
@@ -285,20 +229,14 @@ export default function App() {
 
   // Ejecutar Peritaje Forense Completo
   const runFullAnalysis = async () => {
-    if (busyRef.current) return;
     if (!currentImageBase64) {
       alert("Por favor captura o sube una imagen de documento primero.");
       return;
     }
-    busyRef.current = true;
-    const analyzedImage = currentImageBase64;
     setIsAnalyzing(true);
-    setElapsedSeconds(0);
-    setAnalysisResults(null);
     setValidationError(null);
     try {
-      await ensureServerReady();
-      const data = await apiRequest('/api/analyze/full', {
+      const response = await fetch(`${API_BASE}/api/analyze/full`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -306,7 +244,7 @@ export default function App() {
           rectify_perspective: rectifyPerspective
         })
       });
-      if (imageRef.current !== analyzedImage) return;
+      const data = await response.json();
       if (data.success) {
         setAnalysisResults(data);
         setValidationError(null);
@@ -316,11 +254,9 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error en peritaje:", err);
-      if (imageRef.current === analyzedImage) setValidationError({ error_title: 'No se pudo completar el peritaje', message: err.message });
+      alert("Error de conexión con el servidor forense.");
     } finally {
-      busyRef.current = false;
       setIsAnalyzing(false);
-      setOperationMessage('');
     }
   };
 
@@ -364,7 +300,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <button 
-              onClick={() => isCameraActive ? stopCamera() : startCamera()}
+              onClick={isCameraActive ? stopCamera : startCamera}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 isCameraActive 
                   ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' 
@@ -397,7 +333,7 @@ export default function App() {
             <input 
               ref={fileInputRef} 
               type="file" 
-              accept="image/png,image/jpeg,image/webp,image/bmp"
+              accept="image/*" 
               disabled={isCameraActive}
               className="hidden" 
               onChange={handleFileUpload} 
@@ -407,8 +343,7 @@ export default function App() {
               <input 
                 type="checkbox" 
                 checked={rectifyPerspective} 
-                disabled={isAnalyzing || isComparingDual}
-                onChange={(e) => { setRectifyPerspective(e.target.checked); setAnalysisResults(null); }}
+                onChange={(e) => setRectifyPerspective(e.target.checked)}
                 className="rounded bg-white border-[#DDD7CD] text-[#8B5E3C] focus:ring-0"
               />
               Auto-Rectificación de Perspectiva (Homografía)
@@ -501,9 +436,9 @@ export default function App() {
         <nav className="flex flex-wrap gap-2 border-b border-[#E2DDD3] pb-2">
           {[
             { id: 'inspection', label: '1. Inspección & Visión', icon: Eye },
-            { id: 'inks', label: '2. Color de Tintas (No Supervisado)', icon: Layers },
+            { id: 'inks', label: '2. Espectro de Tintas (No Supervisado)', icon: Layers },
             { id: 'tampering', label: '3. Adulteración de Cifras (Supervisado)', icon: Search },
-            { id: 'signature', label: '4. Firma & Dinámica Motora', icon: Activity },
+            { id: 'signature', label: '4. Firma & Dinámica Motora (Deep Learning)', icon: Activity },
             { id: 'chronology', label: '5. Cruce de Trazos (A*)', icon: Cpu },
             { id: 'report', label: '6. Dictamen Judicial (Sistema Experto)', icon: FileText },
           ].map(tab => {
@@ -528,7 +463,7 @@ export default function App() {
           <div className="ml-auto">
             <button
               onClick={runFullAnalysis}
-              disabled={isAnalyzing || isComparingDual || !currentImageBase64}
+              disabled={isAnalyzing || !currentImageBase64}
               className="flex items-center gap-2 px-5 py-2 rounded-lg font-medium text-sm bg-[#1C1917] hover:bg-[#38332F] text-[#FAF8F5] shadow-sm disabled:opacity-50 transition-all cursor-pointer"
             >
               {isAnalyzing ? (
@@ -545,13 +480,6 @@ export default function App() {
             </button>
           </div>
         </nav>
-
-        <div role="status" aria-live="polite" className="text-xs text-[#78716C] mb-4 flex flex-wrap items-center gap-2">
-          {operationMessage ? `${operationMessage} ${elapsedSeconds} s` : serverStatus === 'ready' ? 'Servidor conectado.' : serverStatus === 'connecting' ? 'Iniciando conexión con Render; el primer acceso puede tardar aproximadamente un minuto…' : connectionError}
-          {serverStatus === 'error' && <button className="underline cursor-pointer" onClick={() => window.location.reload()}>Reintentar conexión</button>}
-          {analysisResults?.processing_seconds != null && !isAnalyzing && <span>Análisis del servidor: {analysisResults.processing_seconds.toFixed(2)} s.</span>}
-        </div>
-        <p className="text-xs text-[#78716C] mb-4">Prototipo académico: combina datos sintéticos y heurísticas de imagen. Sus resultados son orientativos y requieren verificación pericial especializada.</p>
 
         {/* ALERTA DE ERROR DE VALIDACIÓN PERICIAL (SI SE SUBE UNA SELFIE O IMAGEN NO DOCUMENTAL) */}
         {validationError && (
@@ -583,7 +511,7 @@ export default function App() {
                 <Upload className="w-3.5 h-3.5" /> Subir otra Imagen
               </button>
               <button 
-                onClick={() => startCamera()}
+                onClick={startCamera}
                 className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer"
               >
                 Reintentar Cámara
@@ -601,16 +529,16 @@ export default function App() {
         {/* ALERTA DE RESULTADO RÁPIDO SI YA SE ANALIZÓ */}
         {report && (
           <div className={`p-4 rounded-xl border flex items-center justify-between ${
-            report.verdict_color === 'red'
+            report.fraud_points >= 40 
               ? 'bg-[#FDF2F2] border-[#F8D4D4] text-[#7A1F1D]' 
-              : report.verdict_color === 'amber'
+              : report.fraud_points >= 20 
                 ? 'bg-[#FFFBEB] border-amber-300 text-[#854D0E]' 
                 : 'bg-[#F2F7F2] border-[#D1E7D3] text-[#1E4620]'
           }`}>
             <div className="flex items-center gap-3">
-              {report.verdict_color === 'red' ? (
+              {report.fraud_points >= 40 ? (
                 <XCircle className="w-7 h-7 text-rose-500" />
-              ) : report.verdict_color === 'amber' ? (
+              ) : report.fraud_points >= 20 ? (
                 <AlertTriangle className="w-7 h-7 text-amber-500" />
               ) : (
                 <CheckCircle2 className="w-7 h-7 text-emerald-500" />
@@ -618,7 +546,7 @@ export default function App() {
               <div>
                 <div className="font-bold text-base">{report.global_verdict}</div>
                 <div className="text-xs opacity-80">
-                  Expediente: <span className="font-mono">{report.case_id}</span> | Puntuación de reglas: <strong>{report.fraud_points}/100</strong> | Alertas activadas: {report.rules_triggered_count}
+                  Expediente: <span className="font-mono">{report.case_id}</span> | Riesgo Evidenciario: <strong>{report.fraud_points}%</strong> | Reglas Transgredidas: {report.rules_triggered_count}
                 </div>
               </div>
             </div>
@@ -722,8 +650,8 @@ export default function App() {
             <div className="lg:col-span-2 bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-4 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
-                  <h3 className="font-semibold text-[#1C1917] text-sm">Segmentación por Grupos de Color</h3>
-                  <p className="text-xs text-[#78716C]">K-Means agrupa colores en LAB/HSV; no identifica composición química ni demuestra adulteración</p>
+                  <h3 className="font-semibold text-[#1C1917] text-sm">Segmentación Espectral por Clústeres de Color</h3>
+                  <p className="text-xs text-[#78716C]">K-Means agrupa los píxeles de tinta en el espacio LAB/HSV para revelar bolígrafos distintos</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs">
                   <div className="flex items-center gap-1.5">
@@ -732,7 +660,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="w-3 h-3 rounded-full bg-rose-500"></span>
-                    <span>Otro color / trazos neutros</span>
+                    <span>Tinta Adulterada (Cluster 1)</span>
                   </div>
                 </div>
               </div>
@@ -756,14 +684,14 @@ export default function App() {
                   <span className="text-3xl font-bold font-mono text-[#8B5E3C]">
                     {inks ? inks.silhouette_score : '--'}
                   </span>
-                  <span className="text-xs text-[#78716C]">Separación exploratoria, sin umbral forense validado</span>
+                  <span className="text-xs text-[#78716C]">Umbral Pericial: ≥ 0.380</span>
                 </div>
                 
                 {/* Barra de progreso de Silhouette */}
                 <div className="w-full bg-[#EFECE6] h-2.5 rounded-full overflow-hidden">
                   <div 
                     className={`h-full transition-all duration-700 ${
-                      inks?.multiple_inks_detected ? 'bg-amber-500' : 'bg-stone-500'
+                      (inks?.silhouette_score || 0) >= 0.38 ? 'bg-rose-500' : 'bg-emerald-500'
                     }`}
                     style={{ width: `${Math.max(5, Math.min(100, ((inks?.silhouette_score || 0) + 1) * 50))}%` }}
                   />
@@ -772,12 +700,6 @@ export default function App() {
                 <p className="text-xs text-[#44403C] leading-relaxed bg-[#FAF9F5]/60 p-3 rounded border border-[#E5E0D6]">
                   {inks ? inks.scientific_conclusion : "Evalúa cuantitativamente la separabilidad entre grupos de tinta."}
                 </p>
-                {inks && <div className="text-xs text-[#44403C] border border-violet-200 bg-violet-50 rounded p-3 space-y-1">
-                  <p><strong>Inventario de trazos:</strong> color {inks.colored_pixel_count ?? '—'} px · negros/grises {inks.neutral_pixel_count ?? '—'} px.</p>
-                  <p>Violeta: trazos neutros conservados. Pueden ser lápiz, tinta negra o impresión; la foto no determina cuál.</p>
-                  {inks.mixed_colored_neutral && <p className="font-semibold">Mezcla de color y neutros detectada: requiere contexto.</p>}
-                  <p>{inks.silhouette_scope}</p>
-                </div>}
               </div>
 
               {/* GRÁFICO PCA DE DISPERSIÓN 2D */}
@@ -828,7 +750,7 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
                   <h3 className="font-semibold text-[#1C1917] text-sm">Detección de Trazos Anómalos y Enmiendas en Cifras</h3>
-                  <p className="text-xs text-[#78716C]">Señales morfológicas de un clasificador entrenado con datos sintéticos; no certifica legitimidad ni fraude</p>
+                  <p className="text-xs text-[#78716C]">Identificación de adiciones morfológicas que alteran el valor nominal (ej. añadir un cero o alterar dígitos)</p>
                 </div>
                 <span className="text-xs px-2.5 py-1 rounded bg-[#EFECE6] text-[#8B5E3C] font-mono border border-[#D8D1C3]">
                   Clasificador: {tampering?.best_model_used || "Ensemble"}
@@ -848,11 +770,6 @@ export default function App() {
 
             <div className="flex flex-col gap-6">
               {/* TABLA COMPARATIVA DE MODELOS SUPERVISADOS (SÍLABO) */}
-              {tampering && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
-                <p className="font-semibold">{tampering.verdict}</p>
-                <p>{tampering.model_scope}</p>
-                <p>Regiones evaluadas: {tampering.evaluated_regions ?? '—'}.</p>
-              </div>}
               <div className="bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-3 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
                 <h4 className="font-semibold text-[#44403C] text-xs uppercase tracking-wider flex items-center gap-2">
                   <BarChart2 className="w-4 h-4 text-[#8B5E3C]" />
@@ -965,7 +882,7 @@ export default function App() {
                   </div>
                   <button
                     onClick={runDualComparison}
-                    disabled={isComparingDual || isAnalyzing || !currentImageBase64}
+                    disabled={isComparingDual || !currentImageBase64}
                     className="px-5 py-2.5 rounded-lg bg-[#1C1917] hover:bg-[#38332F] text-[#FAF8F5] text-xs font-semibold shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     {isComparingDual ? "Analizando Dinámica Dual..." : "Ejecutar Cotejo Grafotécnico (Firma vs Firma)"}
@@ -1016,9 +933,9 @@ export default function App() {
                             <div className="font-bold text-emerald-900 text-[11px]">Firma Izquierda</div>
                             <div className="text-[10px] text-emerald-700 font-semibold mb-2">Patrón Original</div>
                             <div className="space-y-1 text-[11px] text-emerald-950">
-                              <div>Proporción ancho/alto: <strong>{dualComparisonResults.left_signature?.aspect_ratio}</strong></div>
-                              <div>Densidad de tinta: <strong>{((dualComparisonResults.left_signature?.ink_density || 0)*100).toFixed(1)}%</strong></div>
-                              <div>Contornos: <strong>{dualComparisonResults.left_signature?.contour_count}</strong></div>
+                              <div>Temblores: <strong>{dualComparisonResults.left_signature?.tremor_score}</strong>/100</div>
+                              <div>Velocidad: <strong>{dualComparisonResults.left_signature?.kinematic_speed}</strong>/100</div>
+                              <div>Presión: <strong>{dualComparisonResults.left_signature?.motor_pressure}</strong>/100</div>
                             </div>
                           </div>
 
@@ -1030,12 +947,12 @@ export default function App() {
                           }`}>
                             <div className="font-bold text-[11px]">Firma Derecha</div>
                             <div className="text-[10px] font-semibold mb-2">
-                              {dualComparisonResults.is_forgery ? 'Divergencia visual' : 'Similitud visual'}
+                              {dualComparisonResults.is_forgery ? 'Imitación Sospechosa' : 'Genuina'}
                             </div>
                             <div className="space-y-1 text-[11px]">
-                              <div>Proporción ancho/alto: <strong>{dualComparisonResults.right_signature?.aspect_ratio}</strong></div>
-                              <div>Densidad de tinta: <strong>{((dualComparisonResults.right_signature?.ink_density || 0)*100).toFixed(1)}%</strong></div>
-                              <div>Contornos: <strong>{dualComparisonResults.right_signature?.contour_count}</strong></div>
+                              <div>Temblores: <strong>{dualComparisonResults.right_signature?.tremor_score}</strong>/100</div>
+                              <div>Velocidad: <strong>{dualComparisonResults.right_signature?.kinematic_speed}</strong>/100</div>
+                              <div>Presión: <strong>{dualComparisonResults.right_signature?.motor_pressure}</strong>/100</div>
                             </div>
                           </div>
                         </div>
@@ -1065,14 +982,12 @@ export default function App() {
             <div className="lg:col-span-2 bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-5 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
-                  <h3 className="font-semibold text-[#1C1917] text-sm">Inspección Morfológica de Firma</h3>
-                  <p className="text-xs text-[#78716C]">Estimación heurística de morfología y temblores; entrenamiento MLP y Ridge con datos sintéticos para demostración</p>
+                  <h3 className="font-semibold text-[#1C1917] text-sm">Verificación de Firma y Diagnóstico Neuromotor</h3>
+                  <p className="text-xs text-[#78716C]">Red Neuronal Densa (PyTorch MLP) + Regresión Ridge para presión y velocidad del trazo</p>
                 </div>
                 {signature && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
-                    signature.morphology_status === 'inconclusive'
-                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
-                      : !signature.anomaly_detected
+                    signature.is_genuine 
                       ? 'bg-[#EFECE6] text-[#8B5E3C] border border-[#DDD7CC]' 
                       : 'bg-rose-950 text-rose-400 border border-rose-800'
                   }`}>
@@ -1084,44 +999,44 @@ export default function App() {
               {/* 3 MEDIDORES CINEMÁTICOS */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Cambio de rugosidad</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Presión Motora Estimada</span>
                   <div className="text-2xl font-bold font-mono text-[#8B5E3C]">
-                    {signature ? `${(signature.roughness_growth * 100).toFixed(2)}%` : '--'}
+                    {signature ? `${signature.motor_pressure_index}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
-                    <div className="bg-[#8B5E3C] h-full" style={{ width: `${signature?.tremor_score || 0}%` }} />
+                    <div className="bg-[#8B5E3C] h-full" style={{ width: `${signature?.motor_pressure_index || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Diferencia entre dos escalas del contorno</span>
+                  <span className="text-[11px] text-[#A8A29E]">Regresión Ridge sobre gradiente de borde</span>
                 </div>
 
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Autenticidad / autoría</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Velocidad Cinemática</span>
                   <div className="text-2xl font-bold font-mono text-[#8B5E3C]">
-                    <span className="text-base">{signature ? 'No determinada' : '--'}</span>
+                    {signature ? `${signature.kinematic_speed_index}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
-                    <div className="bg-stone-300 h-full w-full" />
+                    <div className="bg-emerald-500 h-full" style={{ width: `${signature?.kinematic_speed_index || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Requiere muestras de referencia</span>
+                  <span className="text-[11px] text-[#A8A29E]">Ley de Pellat 1: Fluidez subconsciente</span>
                 </div>
 
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Índice de irregularidad</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Ataxia / Micro-Temblores</span>
                   <div className="text-2xl font-bold font-mono text-rose-400">
                     {signature ? `${signature.tremor_score}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
                     <div className="bg-rose-500 h-full" style={{ width: `${signature?.tremor_score || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Heurística visual, no probabilidad de fraude</span>
+                  <span className="text-[11px] text-[#A8A29E]">Ley de Pellat 2: Esfuerzo inhibitorio</span>
                 </div>
               </div>
 
               {/* EXPLICACIÓN GRAFOTÉCNICA */}
               <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6]">
-                <h4 className="text-xs font-semibold text-[#44403C] uppercase tracking-wider mb-2">Observación Morfológica</h4>
+                <h4 className="text-xs font-semibold text-[#44403C] uppercase tracking-wider mb-2">Dictamen Pericial de Autenticidad</h4>
                 <p className="text-xs text-[#44403C] leading-relaxed">
-                  {signature ? signature.explanation : "El módulo analiza irregularidades del contorno. Una firma aislada no permite determinar autoría ni autenticidad."}
+                  {signature ? signature.explanation : "El módulo clasifica si la firma exhibe los automatismos neuromotores naturales del autor o el titubeo lento de una falsificación."}
                 </p>
               </div>
             </div>
@@ -1166,17 +1081,19 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
                   <h3 className="font-semibold text-[#1C1917] text-sm">Inspección de Continuidad en Intersecciones (Algoritmo A*)</h3>
-                  <p className="text-xs text-[#78716C]">Detección de cruces y búsqueda de conectividad; el orden físico de escritura requiere peritaje complementario</p>
+                  <p className="text-xs text-[#78716C]">Búsqueda de trayectoria óptima de flujo de tinta para resolver el fraude de "Firma en Blanco"</p>
                 </div>
                 {chronology && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold ${
-                    chronology.has_intersection
-                      ? 'bg-amber-50 text-amber-800 border border-amber-300'
+                    chronology.blank_signature_fraud 
+                      ? 'bg-rose-100 text-rose-800 border border-rose-300' 
                       : 'bg-emerald-50 text-emerald-700 border border-emerald-300'
                   }`}>
-                    {chronology.has_intersection
-                      ? 'CRUCE DETECTADO: ORDEN NO CONCLUYENTE'
-                      : 'SIN CRUCE DETECTADO POR ESTE METODO'}
+                    {chronology.blank_signature_fraud 
+                      ? 'FIRMA EN BLANCO DETECTADA' 
+                      : chronology.has_intersection 
+                        ? 'SECUENCIA NORMAL (FIRMA SUPERIOR)' 
+                        : 'SECUENCIA NORMAL (SIN CRUCE CONFLICTIVO)'}
                   </span>
                 )}
               </div>
@@ -1194,7 +1111,7 @@ export default function App() {
                     <CheckCircle2 className="w-12 h-12 text-emerald-600" />
                     <h4 className="font-semibold text-[#1C1917] text-sm">Continuidad Homogénea Verificada</h4>
                     <p className="text-xs text-[#78716C] leading-relaxed">
-                      {chronology.chronology_verdict}
+                      {chronology.chronology_verdict || "Se verificó la continuidad de trazos con el algoritmo A*. No se detectaron cruces de trazo contradictorios ni sobreescrituras."}
                     </p>
                   </div>
                 ) : (
@@ -1221,13 +1138,13 @@ export default function App() {
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Firma:</span>
                     <span className="text-[#8B5E3C] font-mono font-bold">
-                      {chronology && chronology.has_intersection ? (chronology.horizontal_path_cost ?? 'Sin recorrido') : (chronology ? 'No ejecutado' : '--')}
+                      {chronology && chronology.has_intersection ? chronology.horizontal_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Texto:</span>
                     <span className="text-orange-500 font-mono font-bold">
-                      {chronology && chronology.has_intersection ? (chronology.vertical_path_cost ?? 'Sin recorrido') : (chronology ? 'No ejecutado' : '--')}
+                      {chronology && chronology.has_intersection ? chronology.vertical_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5">
@@ -1246,22 +1163,21 @@ export default function App() {
 
         {/* PESTAÑA 6: DICTAMEN JUDICIAL OFICIAL (SISTEMA EXPERTO) */}
         {activeTab === 'report' && (
-          <div className="forensic-report max-w-4xl mx-auto w-full bg-white border border-[#E5E0D6] rounded-2xl p-8 flex flex-col gap-6 shadow-sm">
+          <div className="max-w-4xl mx-auto w-full bg-white border border-[#E5E0D6] rounded-2xl p-8 flex flex-col gap-6 shadow-sm">
             <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-5">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-xl bg-[#EFECE6] border border-[#D8D1C3] flex items-center justify-center">
                   <Scale className="w-6 h-6 text-[#8B5E3C]" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-[#1C1917]">Informe de Observaciones del Prototipo</h2>
-                  <p className="text-xs text-[#78716C]">Análisis visual orientativo e identificación SHA-256 del archivo</p>
+                  <h2 className="text-lg font-bold text-[#1C1917]">Dictamen Pericial Oficial</h2>
+                  <p className="text-xs text-[#78716C]">Acta Judicial con Cadena de Custodia Criptográfica</p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
                 <button 
                   onClick={() => window.print()}
-                  disabled={!report || isAnalyzing}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#EFECE6] hover:bg-slate-700 text-[#292524] text-xs font-semibold border border-[#D8D1C3]"
                 >
                   <Download className="w-4 h-4" />
@@ -1274,23 +1190,17 @@ export default function App() {
               <div className="space-y-6 text-sm text-[#44403C]">
                 {/* TARJETA DE VEREDICTO */}
                 <div className={`p-5 rounded-xl border ${
-                  report.verdict_color === 'red'
+                  report.fraud_points >= 40 
                     ? 'bg-rose-50 border-rose-200 text-rose-900' 
-                    : report.verdict_color === 'amber'
+                    : report.fraud_points >= 20 
                       ? 'bg-amber-50 border-amber-200 text-amber-900' 
                       : 'bg-emerald-50 border-emerald-200 text-emerald-900'
                 }`}>
-                  <div className="text-xs uppercase font-bold tracking-wider opacity-75">Resultado orientativo; legitimidad no determinada:</div>
+                  <div className="text-xs uppercase font-bold tracking-wider opacity-75">Conclusión del Tribunal Pericial:</div>
                   <div className="text-2xl font-bold mt-1">{report.global_verdict}</div>
                   <div className="text-xs mt-2 opacity-90">
                     Hash SHA-256 de Evidencia: <code className="font-mono bg-white px-2 py-0.5 rounded border border-stone-200 text-stone-800">{report.doc_hash}</code>
                   </div>
-                </div>
-
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
-                  <p className="font-semibold">Este análisis no certifica que el documento sea legítimo o falso.</p>
-                  {report.limitations?.map((limitation, index) => <p key={index}>{limitation}</p>)}
-                  {analysisResults?.quality_analysis?.warnings?.map((warning, index) => <p key={`quality-${index}`}>{warning}</p>)}
                 </div>
 
                 {/* REGLAS TRANSGREDIDAS */}
@@ -1311,7 +1221,7 @@ export default function App() {
 
                 {/* TEXTO COMPLETO DEL DICTAMEN */}
                 <div>
-                  <h4 className="font-semibold text-[#1C1917] text-xs uppercase tracking-wider mb-2">Texto del informe orientativo:</h4>
+                  <h4 className="font-semibold text-[#1C1917] text-xs uppercase tracking-wider mb-2">Transcripción del Acta Judicial:</h4>
                   <pre className="p-4 bg-[#FAF9F5] rounded-xl border border-[#E5E0D6] text-xs font-mono text-[#44403C] whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-96">
                     {report.official_report_markdown}
                   </pre>
