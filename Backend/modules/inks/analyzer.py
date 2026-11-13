@@ -95,7 +95,7 @@ class InkAnalyzer:
         y_coords, x_coords = np.where(core_mask > 0)
         max_samples = 6000
         if len(y_coords) > max_samples:
-            idx = np.random.choice(len(y_coords), max_samples, replace=False)
+            idx = np.random.default_rng(42).choice(len(y_coords), max_samples, replace=False)
             y_coords = y_coords[idx]
             x_coords = x_coords[idx]
 
@@ -153,7 +153,7 @@ class InkAnalyzer:
 
         # 2. Métricas de Evaluación: Silhouette Score
         eval_n = min(2000, len(features))
-        eval_idx = np.random.choice(len(features), eval_n, replace=False)
+        eval_idx = np.random.default_rng(42).choice(len(features), eval_n, replace=False)
         if len(np.unique(kmeans_labels[eval_idx])) > 1:
             raw_sil_score = float(silhouette_score(features[eval_idx], kmeans_labels[eval_idx]))
         else:

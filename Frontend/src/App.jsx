@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { apiRequest } from './api';
 import { 
   Camera, Upload, FileText, CheckCircle2, AlertTriangle, XCircle, 
   Layers, Search, ShieldCheck, Scale, Cpu, Activity, RefreshCw, 
   Eye, Download, BarChart2, Zap
 } from 'lucide-react';
-
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('inspection');
@@ -24,14 +23,27 @@ export default function App() {
   const [signatureTabMode, setSignatureTabMode] = useState('document'); // 'document' | 'dual'
   const [dualComparisonResults, setDualComparisonResults] = useState(null);
   const [isComparingDual, setIsComparingDual] = useState(false);
+  const [serverStatus, setServerStatus] = useState('connecting');
+  const [connectionError, setConnectionError] = useState('');
+  const [operationMessage, setOperationMessage] = useState('');
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [videoDevices, setVideoDevices] = useState([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState('');
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const canvasRef = useRef(null);
+  const imageRef = useRef(null);
+  const busyRef = useRef(false);
   const fileInputRef = useRef(null);
+
+  const updateImage = (image) => {
+    imageRef.current = image;
+    setCurrentImageBase64(image);
+    setAnalysisResults(null);
+    setDualComparisonResults(null);
+    setValidationError(null);
+  };
 
   // Vincular stream al video cuando la cámara esté activa y el elemento montado
   useEffect(() => {
@@ -45,23 +57,52 @@ export default function App() {
 
   // Cargar muestras y benchmarks al iniciar
   useEffect(() => {
-    fetch(`${API_BASE}/api/samples`)
-      .then(res => res.json())
-      .then(data => {
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        await apiRequest('/api/health', { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        setServerStatus('ready');
+        const [data, benchmark] = await Promise.all([
+          apiRequest('/api/samples', { signal: controller.signal }),
+          apiRequest('/api/benchmark/models', { signal: controller.signal }),
+        ]);
+        if (controller.signal.aborted) return;
         if (data.samples && data.samples.length > 0) {
           setSamples(data.samples);
-          // Cargar primera muestra por defecto
-          setSelectedSample(data.samples[0].id);
-          setCurrentImageBase64(data.samples[0].image_base64);
+          if (!imageRef.current) {
+            setSelectedSample(data.samples[0].id);
+            updateImage(data.samples[0].image_base64);
+          }
         }
-      })
-      .catch(err => console.error("Error al cargar muestras:", err));
-
-    fetch(`${API_BASE}/api/benchmark/models`)
-      .then(res => res.json())
-      .then(data => setBenchmarkData(data))
-      .catch(err => console.error("Error al cargar benchmarks:", err));
+        setBenchmarkData(benchmark);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setServerStatus('error');
+        setConnectionError(error.message);
+      }
+    };
+    load();
+    return () => {
+      controller.abort();
+      streamRef.current?.getTracks().forEach(track => track.stop());
+    };
   }, []);
+
+  useEffect(() => {
+    if (!isAnalyzing && !isComparingDual) return;
+    const started = Date.now();
+    const timer = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [isAnalyzing, isComparingDual]);
+
+  const ensureServerReady = async () => {
+    setOperationMessage('Conectando con el servidor de Render…');
+    await apiRequest('/api/health');
+    setServerStatus('ready');
+    setConnectionError('');
+    setOperationMessage('Procesando la imagen y ejecutando los módulos…');
+  };
 
   // Manejador de cámara web con soporte para selección de dispositivo (Laptop vs Celular) y fallback tolerante
   const startCamera = async (targetDeviceId = null) => {
@@ -163,14 +204,14 @@ export default function App() {
 
 
   const captureCameraFrame = () => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || videoRef.current.readyState < 2 || !videoRef.current.videoWidth) return;
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth || 1280;
     canvas.height = videoRef.current.videoHeight || 720;
     const ctx = canvas.getContext('2d');
     ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
     const b64 = canvas.toDataURL('image/png');
-    setCurrentImageBase64(b64);
+    updateImage(b64);
     setSelectedSample('camera');
     setValidationError(null);
     setAnalysisResults(null);
@@ -184,9 +225,15 @@ export default function App() {
     }
     const file = e.target?.files?.[0];
     if (file) {
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/bmp'].includes(file.type) || file.size > 16_000_000) {
+        setValidationError({ error_title: 'Imagen no compatible', message: 'Selecciona PNG, JPG, WEBP o BMP de hasta 16 MB.' });
+        e.target.value = '';
+        return;
+      }
       const reader = new FileReader();
+      reader.onerror = () => setValidationError({ message: 'No se pudo leer el archivo seleccionado.' });
       reader.onload = (uploadEvent) => {
-        setCurrentImageBase64(uploadEvent.target.result);
+        updateImage(uploadEvent.target.result);
         setSelectedSample('upload');
         setValidationError(null);
         setAnalysisResults(null);
@@ -198,21 +245,30 @@ export default function App() {
   };
 
   const runDualComparison = async () => {
-    if (!currentImageBase64) return;
+    if (!currentImageBase64 || busyRef.current) return;
+    busyRef.current = true;
+    const analyzedImage = currentImageBase64;
     setIsComparingDual(true);
+    setElapsedSeconds(0);
+    setDualComparisonResults(null);
+    setValidationError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/signatures/compare_dual`, {
+      await ensureServerReady();
+      const data = await apiRequest('/api/signatures/compare_dual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image_base64: currentImageBase64 })
       });
-      const data = await res.json();
-      setDualComparisonResults(data);
+      if (imageRef.current !== analyzedImage) return;
+      if (data.success) setDualComparisonResults(data);
+      else setValidationError(data);
     } catch (err) {
       console.error("Error en cotejo dual:", err);
-      alert("Ocurrió un error al ejecutar el cotejo dual.");
+      if (imageRef.current === analyzedImage) setValidationError({ error_title: 'No se pudo completar el cotejo', message: err.message });
     } finally {
+      busyRef.current = false;
       setIsComparingDual(false);
+      setOperationMessage('');
     }
   };
 
@@ -220,7 +276,7 @@ export default function App() {
     const sample = samples.find(s => s.id === sampleId);
     if (sample) {
       setSelectedSample(sample.id);
-      setCurrentImageBase64(sample.image_base64);
+      updateImage(sample.image_base64);
       setAnalysisResults(null);
       setValidationError(null);
       stopCamera();
@@ -229,14 +285,20 @@ export default function App() {
 
   // Ejecutar Peritaje Forense Completo
   const runFullAnalysis = async () => {
+    if (busyRef.current) return;
     if (!currentImageBase64) {
       alert("Por favor captura o sube una imagen de documento primero.");
       return;
     }
+    busyRef.current = true;
+    const analyzedImage = currentImageBase64;
     setIsAnalyzing(true);
+    setElapsedSeconds(0);
+    setAnalysisResults(null);
     setValidationError(null);
     try {
-      const response = await fetch(`${API_BASE}/api/analyze/full`, {
+      await ensureServerReady();
+      const data = await apiRequest('/api/analyze/full', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -244,7 +306,7 @@ export default function App() {
           rectify_perspective: rectifyPerspective
         })
       });
-      const data = await response.json();
+      if (imageRef.current !== analyzedImage) return;
       if (data.success) {
         setAnalysisResults(data);
         setValidationError(null);
@@ -254,9 +316,11 @@ export default function App() {
       }
     } catch (err) {
       console.error("Error en peritaje:", err);
-      alert("Error de conexión con el servidor forense.");
+      if (imageRef.current === analyzedImage) setValidationError({ error_title: 'No se pudo completar el peritaje', message: err.message });
     } finally {
+      busyRef.current = false;
       setIsAnalyzing(false);
+      setOperationMessage('');
     }
   };
 
@@ -300,7 +364,7 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <button 
-              onClick={isCameraActive ? stopCamera : startCamera}
+              onClick={() => isCameraActive ? stopCamera() : startCamera()}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all ${
                 isCameraActive 
                   ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-lg shadow-rose-600/30' 
@@ -333,7 +397,7 @@ export default function App() {
             <input 
               ref={fileInputRef} 
               type="file" 
-              accept="image/*" 
+              accept="image/png,image/jpeg,image/webp,image/bmp"
               disabled={isCameraActive}
               className="hidden" 
               onChange={handleFileUpload} 
@@ -343,7 +407,8 @@ export default function App() {
               <input 
                 type="checkbox" 
                 checked={rectifyPerspective} 
-                onChange={(e) => setRectifyPerspective(e.target.checked)}
+                disabled={isAnalyzing || isComparingDual}
+                onChange={(e) => { setRectifyPerspective(e.target.checked); setAnalysisResults(null); }}
                 className="rounded bg-white border-[#DDD7CD] text-[#8B5E3C] focus:ring-0"
               />
               Auto-Rectificación de Perspectiva (Homografía)
@@ -438,7 +503,7 @@ export default function App() {
             { id: 'inspection', label: '1. Inspección & Visión', icon: Eye },
             { id: 'inks', label: '2. Espectro de Tintas (No Supervisado)', icon: Layers },
             { id: 'tampering', label: '3. Adulteración de Cifras (Supervisado)', icon: Search },
-            { id: 'signature', label: '4. Firma & Dinámica Motora (Deep Learning)', icon: Activity },
+            { id: 'signature', label: '4. Firma & Dinámica Motora', icon: Activity },
             { id: 'chronology', label: '5. Cruce de Trazos (A*)', icon: Cpu },
             { id: 'report', label: '6. Dictamen Judicial (Sistema Experto)', icon: FileText },
           ].map(tab => {
@@ -463,7 +528,7 @@ export default function App() {
           <div className="ml-auto">
             <button
               onClick={runFullAnalysis}
-              disabled={isAnalyzing || !currentImageBase64}
+              disabled={isAnalyzing || isComparingDual || !currentImageBase64}
               className="flex items-center gap-2 px-5 py-2 rounded-lg font-medium text-sm bg-[#1C1917] hover:bg-[#38332F] text-[#FAF8F5] shadow-sm disabled:opacity-50 transition-all cursor-pointer"
             >
               {isAnalyzing ? (
@@ -480,6 +545,13 @@ export default function App() {
             </button>
           </div>
         </nav>
+
+        <div role="status" aria-live="polite" className="text-xs text-[#78716C] mb-4 flex flex-wrap items-center gap-2">
+          {operationMessage ? `${operationMessage} ${elapsedSeconds} s` : serverStatus === 'ready' ? 'Servidor conectado.' : serverStatus === 'connecting' ? 'Iniciando conexión con Render; el primer acceso puede tardar aproximadamente un minuto…' : connectionError}
+          {serverStatus === 'error' && <button className="underline cursor-pointer" onClick={() => window.location.reload()}>Reintentar conexión</button>}
+          {analysisResults?.processing_seconds != null && !isAnalyzing && <span>Análisis del servidor: {analysisResults.processing_seconds.toFixed(2)} s.</span>}
+        </div>
+        <p className="text-xs text-[#78716C] mb-4">Prototipo académico: combina datos sintéticos y heurísticas de imagen. Sus resultados son orientativos y requieren verificación pericial especializada.</p>
 
         {/* ALERTA DE ERROR DE VALIDACIÓN PERICIAL (SI SE SUBE UNA SELFIE O IMAGEN NO DOCUMENTAL) */}
         {validationError && (
@@ -511,7 +583,7 @@ export default function App() {
                 <Upload className="w-3.5 h-3.5" /> Subir otra Imagen
               </button>
               <button 
-                onClick={startCamera}
+                onClick={() => startCamera()}
                 className="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold text-xs transition-all shadow-md cursor-pointer"
               >
                 Reintentar Cámara
@@ -546,7 +618,7 @@ export default function App() {
               <div>
                 <div className="font-bold text-base">{report.global_verdict}</div>
                 <div className="text-xs opacity-80">
-                  Expediente: <span className="font-mono">{report.case_id}</span> | Riesgo Evidenciario: <strong>{report.fraud_points}%</strong> | Reglas Transgredidas: {report.rules_triggered_count}
+                  Expediente: <span className="font-mono">{report.case_id}</span> | Puntuación de reglas: <strong>{report.fraud_points}/100</strong> | Alertas activadas: {report.rules_triggered_count}
                 </div>
               </div>
             </div>
@@ -882,7 +954,7 @@ export default function App() {
                   </div>
                   <button
                     onClick={runDualComparison}
-                    disabled={isComparingDual || !currentImageBase64}
+                    disabled={isComparingDual || isAnalyzing || !currentImageBase64}
                     className="px-5 py-2.5 rounded-lg bg-[#1C1917] hover:bg-[#38332F] text-[#FAF8F5] text-xs font-semibold shadow-sm transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     {isComparingDual ? "Analizando Dinámica Dual..." : "Ejecutar Cotejo Grafotécnico (Firma vs Firma)"}
@@ -983,7 +1055,7 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
                   <h3 className="font-semibold text-[#1C1917] text-sm">Verificación de Firma y Diagnóstico Neuromotor</h3>
-                  <p className="text-xs text-[#78716C]">Red Neuronal Densa (PyTorch MLP) + Regresión Ridge para presión y velocidad del trazo</p>
+                  <p className="text-xs text-[#78716C]">Estimación heurística de morfología y temblores; entrenamiento MLP y Ridge con datos sintéticos para demostración</p>
                 </div>
                 {signature && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
@@ -1006,7 +1078,7 @@ export default function App() {
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
                     <div className="bg-[#8B5E3C] h-full" style={{ width: `${signature?.motor_pressure_index || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Regresión Ridge sobre gradiente de borde</span>
+                  <span className="text-[11px] text-[#A8A29E]">Índice heurístico; no mide presión física</span>
                 </div>
 
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
@@ -1163,7 +1235,7 @@ export default function App() {
 
         {/* PESTAÑA 6: DICTAMEN JUDICIAL OFICIAL (SISTEMA EXPERTO) */}
         {activeTab === 'report' && (
-          <div className="max-w-4xl mx-auto w-full bg-white border border-[#E5E0D6] rounded-2xl p-8 flex flex-col gap-6 shadow-sm">
+          <div className="forensic-report max-w-4xl mx-auto w-full bg-white border border-[#E5E0D6] rounded-2xl p-8 flex flex-col gap-6 shadow-sm">
             <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-5">
               <div className="flex items-center gap-3">
                 <div className="w-12 h-12 rounded-xl bg-[#EFECE6] border border-[#D8D1C3] flex items-center justify-center">
@@ -1178,6 +1250,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button 
                   onClick={() => window.print()}
+                  disabled={!report || isAnalyzing}
                   className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#EFECE6] hover:bg-slate-700 text-[#292524] text-xs font-semibold border border-[#D8D1C3]"
                 >
                   <Download className="w-4 h-4" />

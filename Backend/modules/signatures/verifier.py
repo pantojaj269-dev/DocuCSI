@@ -32,6 +32,7 @@ class SignatureMLP(nn.Module):
 class SignatureVerifier:
     def __init__(self):
         self.device = torch.device('cpu')
+        torch.manual_seed(42)
         self.model = SignatureMLP(input_dim=12).to(self.device)
         self.pressure_regressor = Ridge(alpha=1.0)
         self.loss_history = []
@@ -188,7 +189,7 @@ class SignatureVerifier:
             'kinematic_speed_index': round(speed_score, 1),
             'tremor_score': round(tremor_score, 1),
             'training_epochs_loss': self.loss_history[::2],
-            'model_architecture': 'Deep Learning MLP (PyTorch) + Regresion Ridge',
+            'model_architecture': 'Heurística morfológica de temblores; MLP y Ridge entrenados con datos sintéticos para demostración',
             'explanation': (
                 f'DIAGNOSTICO NEUROMOTOR: Gesto fluido con automatismo espontaneo (Velocidad: {speed_score:.0f}/100, Temblores: {tremor_score:.0f}/100). Coincidente con firma indubitada.'
                 if is_genuine else

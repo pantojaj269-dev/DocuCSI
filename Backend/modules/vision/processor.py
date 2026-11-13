@@ -6,18 +6,45 @@ from typing import Tuple, Dict, Any, Optional
 class DocumentProcessor:
     @staticmethod
     def decode_image(image_bytes: bytes) -> np.ndarray:
+        if not image_bytes:
+            raise ValueError('La imagen está vacía.')
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
             raise ValueError('No se pudo decodificar la imagen enviada.')
+        if img.shape[0] * img.shape[1] > 24_000_000:
+            raise ValueError('La imagen supera 24 megapíxeles. Sube una versión más pequeña.')
         return img
 
     @staticmethod
     def decode_base64(b64_str: str) -> np.ndarray:
         if ',' in b64_str:
             b64_str = b64_str.split(',')[1]
-        img_bytes = base64.b64decode(b64_str)
+        img_bytes = DocumentProcessor.decode_base64_bytes(b64_str)
         return DocumentProcessor.decode_image(img_bytes)
+
+    @staticmethod
+    def decode_base64_bytes(b64_str: str) -> bytes:
+        if len(b64_str) > 22_000_000:
+            raise ValueError('La imagen es demasiado pesada. El máximo es 16 MB.')
+        encoded = b64_str.split(',', 1)[-1]
+        try:
+            image_bytes = base64.b64decode(encoded, validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise ValueError('El contenido de la imagen no es Base64 válido.') from exc
+        if len(image_bytes) > 16_000_000:
+            raise ValueError('La imagen es demasiado pesada. El máximo es 16 MB.')
+        return image_bytes
+
+    @staticmethod
+    def prepare_for_analysis(image: np.ndarray) -> np.ndarray:
+        h, w = image.shape[:2]
+        if min(h, w) < 64:
+            raise ValueError('La imagen debe medir al menos 64 píxeles por lado.')
+        scale = min(1.0, 1600.0 / max(h, w))
+        if scale < 1.0:
+            return cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+        return image
 
     @staticmethod
     def encode_base64(img: np.ndarray, format: str = '.png') -> str:
@@ -165,10 +192,9 @@ class DocumentProcessor:
         
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
         min_size = 20
-        clean_mask = np.zeros_like(mask)
-        for i in range(1, num_labels):
-            if stats[i, cv2.CC_STAT_AREA] >= min_size:
-                clean_mask[labels == i] = 255
+        keep = stats[:, cv2.CC_STAT_AREA] >= min_size
+        keep[0] = False
+        clean_mask = (keep[labels].astype(np.uint8) * 255)
 
         return clean_mask, gray
 

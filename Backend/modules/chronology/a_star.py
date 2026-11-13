@@ -91,11 +91,10 @@ class ChronologyAnalyzer:
         sobely = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
         grad_mag, _ = cv2.cartToPolar(sobelx, sobely)
         
-        for y, x in zip(ink_indices[0], ink_indices[1]):
-            # Costo menor = mayor fluidez de tinta
-            intensity_cost = (255 - gray[y, x]) / 255.0 * 20.0
-            grad_cost = grad_mag[y, x] * 0.15
-            cost_map[y, x] = max(1.0, 30.0 - intensity_cost + grad_cost)
+        # Calcular todos los píxeles en NumPy, sin un bucle Python por cada trazo.
+        ink_pixels = ink_mask > 0
+        intensity_cost = (255.0 - gray[ink_pixels].astype(np.float32)) / 255.0 * 20.0
+        cost_map[ink_pixels] = np.maximum(1.0, 30.0 - intensity_cost + grad_mag[ink_pixels] * 0.15)
 
         # 1. Detección de intersección real entre renglón/cláusula y firma manuscrita
         min_line_len = max(50, int(w * 0.15))

@@ -1,5 +1,6 @@
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
+from uuid import uuid4
 from typing import Dict, Any, List
 
 class ForensicExpertSystem:
@@ -81,28 +82,30 @@ class ForensicExpertSystem:
 
         # Veredicto Global
         if fraud_points >= 40:
-            global_verdict = "DOCUMENTO APOCRIFO / FRAUDE DOCUMENTAL CONCLUYENTE"
+            global_verdict = "INDICIOS DE POSIBLE MANIPULACION DOCUMENTAL"
             verdict_color = "red"
         elif fraud_points >= 20:
             global_verdict = "INDICIOS SOSPECHOSOS DE ENMIENDA (Requiere peritaje complementario)"
             verdict_color = "amber"
         else:
-            global_verdict = "DOCUMENTO AUTENTICO Y GENUINO"
+            global_verdict = "SIN INDICIOS DETECTADOS POR EL PROTOTIPO"
             verdict_color = "emerald"
 
         # Generar texto formal del Dictamen Pericial Judicial
-        case_id = f"EXP-FORENSE-{datetime.now().strftime('%Y%m%d')}-0089"
+        issued_at = datetime.now(timezone.utc)
+        case_id = f"EXP-FORENSE-{issued_at.strftime('%Y%m%d')}-{uuid4().hex[:8].upper()}"
         report_text = f"""# DICTAMEN PERICIAL DOCUMENTOLOGICO Y GRAFOTECNICO
+**ALCANCE:** Prototipo academico con entrenamiento sintetico y heuristicas de imagen. No constituye un dictamen judicial ni acredita autenticidad, composicion quimica o secuencia fisica de trazos.
 **ORGANO PERICIAL:** Laboratorio de Criminalistica e Inteligencia Artificial Documental
 **EXPEDIENTE N°:** {case_id}
-**FECHA Y HORA DE EMISION:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**FECHA Y HORA DE EMISION:** {issued_at.strftime('%Y-%m-%d %H:%M:%S UTC')}
 
 ---
 
 ### 1. CADENA DE CUSTODIA DIGITAL
 - **Algoritmo Criptografico:** SHA-256
 - **Hash de la Prueba Digital:** `{doc_hash}`
-- **Garantia de Integridad:** Se certifica que el archivo procesado no sufrio manipulacion o alteracion digital externa.
+- **Identificacion del archivo recibido:** El hash corresponde a los bytes originales enviados, antes de rectificacion y redimensionamiento. Permite comparar integridad entre copias; no certifica su procedencia ni ausencia de alteraciones previas.
 
 ---
 
@@ -140,8 +143,8 @@ class ForensicExpertSystem:
         report_text += f"""---
 
 ### 4. CONCLUSION PERICIAL JUDICIAL
-**VEREDICTO DEFINITIVO:** **{global_verdict}**
-**NIVEL DE RIESGO EVIDENCIARIO:** {min(100, fraud_points)}% de probabilidad de manipulacion fraudulenta.
+**RESULTADO ORIENTATIVO:** **{global_verdict}**
+**PUNTUACION DE REGLAS:** {min(100, fraud_points)} / 100. No representa una probabilidad estadistica calibrada.
 
 *Dictamen fundado en leyes fisicas de optica espectral, principios de la grafotecnia de Solange Pellat y modelos verificables de inteligencia artificial.*
 """

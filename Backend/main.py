@@ -1,11 +1,24 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 import base64
 import os
+import logging
+import time
+from pathlib import Path
+from threading import BoundedSemaphore
+
+# Evitar sobreasignar CPU y memoria en instancias pequeñas de Render.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
 import cv2
 import numpy as np
+import torch
+
+cv2.setNumThreads(1)
+torch.set_num_threads(1)
 
 from modules.vision.processor import DocumentProcessor
 from modules.inks.analyzer import InkAnalyzer
@@ -23,7 +36,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -31,6 +44,8 @@ app.add_middleware(
 # Instanciar detectores
 tampering_detector = TamperingDetector()
 signature_verifier = SignatureVerifier()
+analysis_slot = BoundedSemaphore(1)
+logger = logging.getLogger('docucsi')
 
 class Base64Payload(BaseModel):
     image_base64: str
@@ -42,9 +57,8 @@ def health_check():
 
 @app.get("/api/samples")
 def get_sample_documents():
-    samples_dir = "data/samples"
+    samples_dir = Path(__file__).resolve().parent / 'data' / 'samples'
     if not os.path.exists(samples_dir):
-        from data.generate_mock_data import create_sample_check_clean
         return {"samples": []}
 
     results = []
@@ -55,7 +69,7 @@ def get_sample_documents():
         "blank_signature.png": {"title": "Abuso de Firma en Blanco", "description": "Texto del pagare redactado fisicamente encima de una firma previa."}
     }
 
-    for fname in os.listdir(samples_dir):
+    for fname in sorted(os.listdir(samples_dir)):
         if fname.endswith(".png"):
             fpath = os.path.join(samples_dir, fname)
             img = cv2.imread(fpath)
@@ -81,9 +95,20 @@ def get_benchmark_models():
     }
 
 @app.post("/api/analyze/full")
-async def analyze_full_document(payload: Base64Payload):
+def analyze_full_document(payload: Base64Payload):
+    if not analysis_slot.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail='El servidor está procesando otro peritaje. Espera unos segundos y vuelve a intentar.', headers={'Retry-After': '5'})
+    started = time.perf_counter()
+    timings = {}
+
+    def record_stage(name):
+        now = time.perf_counter()
+        timings[name] = round(now - started - sum(timings.values()), 3)
+
     try:
-        image = DocumentProcessor.decode_base64(payload.image_base64)
+        original_bytes = DocumentProcessor.decode_base64_bytes(payload.image_base64)
+        image = DocumentProcessor.prepare_for_analysis(DocumentProcessor.decode_image(original_bytes))
+        record_stage('decode')
         
         # 0. Validador de Entrada Pericial (Guardia de Percepción)
         is_valid, val_msg, val_details = DocumentProcessor.validate_document(image)
@@ -104,18 +129,23 @@ async def analyze_full_document(payload: Base64Payload):
 
         # 2. Extraccion de mascara de tinta y esqueleto
         ink_mask, gray = DocumentProcessor.extract_ink_mask(rectified)
+        record_stage('preprocessing')
 
         # 3. Analisis No Supervisado de Tintas (K-Means, DBSCAN, PCA)
         inks_res = InkAnalyzer.analyze(rectified, ink_mask)
+        record_stage('inks')
 
         # 4. Analisis Supervisado de Adulteracion de Cifras
         tampering_res = tampering_detector.detect(rectified, ink_mask)
+        record_stage('tampering')
 
         # 5. Verificacion de Firma y Presion con Deep Learning (PyTorch)
         signature_res = signature_verifier.verify(rectified, ink_mask)
+        record_stage('signature')
 
         # 6. Analisis de Cronologia de Cruce con Algoritmo A*
         chronology_res = ChronologyAnalyzer.analyze_intersection(rectified, ink_mask)
+        record_stage('chronology')
 
         # 7. Evaluacion del Sistema Experto y Dictamen Judicial
         findings = {
@@ -124,15 +154,18 @@ async def analyze_full_document(payload: Base64Payload):
             'signature': signature_res,
             'chronology': chronology_res
         }
-        _, img_encoded = cv2.imencode(".png", rectified)
-        judicial_report = ForensicExpertSystem.evaluate(findings, img_encoded.tobytes())
+        judicial_report = ForensicExpertSystem.evaluate(findings, original_bytes)
 
         # Codificar imagenes resultantes
         _, rect_buf = cv2.imencode(".png", rectified)
         _, mask_buf = cv2.imencode(".png", ink_mask)
+        record_stage('report_and_encoding')
 
         return {
             "success": True,
+            "processing_seconds": round(time.perf_counter() - started, 3),
+            "stage_timings_seconds": timings,
+            "analysis_dimensions": {"width": int(image.shape[1]), "height": int(image.shape[0])},
             "rectified_perspective": rectified_status,
             "rectified_image_b64": "data:image/png;base64," + base64.b64encode(rect_buf).decode("utf-8"),
             "ink_mask_b64": "data:image/png;base64," + base64.b64encode(mask_buf).decode("utf-8"),
@@ -143,17 +176,24 @@ async def analyze_full_document(payload: Base64Payload):
             "judicial_report": judicial_report
         }
 
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en analisis forense: {str(e)}")
+        logger.exception('Error en análisis forense')
+        raise HTTPException(status_code=500, detail='No se pudo completar el análisis. Intenta con otra imagen.') from e
+    finally:
+        analysis_slot.release()
 
 @app.post("/api/signatures/compare_dual")
-async def compare_dual_signatures_endpoint(payload: Base64Payload):
+def compare_dual_signatures_endpoint(payload: Base64Payload):
     """
     Cotejo Grafotecnico Comparativo Directo:
     Analiza una misma hoja con dos firmas (Izquierda: Patron Original, Derecha: Cuestionada / Imitacion).
     """
+    if not analysis_slot.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail='El servidor está procesando otro peritaje. Espera unos segundos y vuelve a intentar.', headers={'Retry-After': '5'})
     try:
-        image = DocumentProcessor.decode_base64(payload.image_base64)
+        image = DocumentProcessor.prepare_for_analysis(DocumentProcessor.decode_base64(payload.image_base64))
         is_valid, msg, _ = DocumentProcessor.validate_document(image)
         if not is_valid:
             return {
@@ -165,8 +205,13 @@ async def compare_dual_signatures_endpoint(payload: Base64Payload):
         ink_mask, _ = DocumentProcessor.extract_ink_mask(image)
         comparison_res = signature_verifier.compare_dual_signatures(image, ink_mask)
         return comparison_res
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en cotejo dual de firmas: {str(e)}")
+        logger.exception('Error en cotejo dual')
+        raise HTTPException(status_code=500, detail='No se pudo completar el cotejo de firmas.') from e
+    finally:
+        analysis_slot.release()
 
 
 if __name__ == "__main__":
