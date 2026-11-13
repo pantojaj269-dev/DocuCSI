@@ -37,6 +37,7 @@ class ChronologyAnalyzer:
         heapq.heappush(open_set, start_node)
         
         visited = set()
+        best_g = {start: 0.0}
         nodes_explored = 0
         max_iterations = 8000
 
@@ -71,6 +72,9 @@ class ChronologyAnalyzer:
                     if edge_penalty >= 250.0: # Obstaculo o fondo vacio
                         continue
                     new_g = current.g + step_cost + (edge_penalty * 0.1)
+                    if new_g >= best_g.get((nx, ny), float('inf')):
+                        continue
+                    best_g[(nx, ny)] = new_g
                     new_h = cls.heuristic((nx, ny), goal)
                     neighbor_node = Node(nx, ny, new_g, new_h, current)
                     heapq.heappush(open_set, neighbor_node)
@@ -79,124 +83,5 @@ class ChronologyAnalyzer:
 
     @classmethod
     def analyze_intersection(cls, image_bgr: np.ndarray, ink_mask: np.ndarray) -> Dict[str, Any]:
-        h, w = image_bgr.shape[:2]
-        gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-        
-        # Mapa de costos inversos: donde hay tinta densa, el costo de avance es bajo (0-50); fuera de tinta es 255.
-        cost_map = np.full((h, w), 255.0, dtype=np.float32)
-        ink_indices = np.where(ink_mask > 0)
-        
-        # Penalizacion por saltos de gradiente
-        sobelx = cv2.Sobel(gray, cv2.CV_32F, 1, 0)
-        sobely = cv2.Sobel(gray, cv2.CV_32F, 0, 1)
-        grad_mag, _ = cv2.cartToPolar(sobelx, sobely)
-        
-        # Calcular todos los píxeles en NumPy, sin un bucle Python por cada trazo.
-        ink_pixels = ink_mask > 0
-        intensity_cost = (255.0 - gray[ink_pixels].astype(np.float32)) / 255.0 * 20.0
-        cost_map[ink_pixels] = np.maximum(1.0, 30.0 - intensity_cost + grad_mag[ink_pixels] * 0.15)
-
-        # 1. Detección de intersección real entre renglón/cláusula y firma manuscrita
-        min_line_len = max(50, int(w * 0.15))
-        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (min_line_len, 1))
-        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(12, int(h * 0.025))))
-        h_lines = cv2.morphologyEx(ink_mask, cv2.MORPH_OPEN, h_kernel)
-        v_strokes = cv2.morphologyEx(ink_mask, cv2.MORPH_OPEN, v_kernel)
-
-        # Excluir márgenes perimetrales exteriores (bordes de marco del cheque o soporte)
-        my, mx = int(h * 0.12), int(w * 0.10)
-        inner_overlap = np.zeros_like(ink_mask)
-        inner_overlap[my:h-my, mx:w-mx] = cv2.bitwise_and(h_lines[my:h-my, mx:w-mx], v_strokes[my:h-my, mx:w-mx])
-
-        overlap_pts = np.where(inner_overlap > 0)
-        has_intersection = len(overlap_pts[0]) >= 24
-
-        # Si NO hay intersección física entre renglón y firma en el documento:
-        if not has_intersection:
-            # Generar visualización pericial del mapeo de continuidad
-            vis = image_bgr.copy()
-            contours, _ = cv2.findContours(ink_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            cv2.drawContours(vis, contours, -1, (60, 180, 75), 1)
-            
-            # Banner pericial informativo
-            overlay = vis.copy()
-            cv2.rectangle(overlay, (0, 0), (w, 42), (28, 25, 23), -1)
-            cv2.addWeighted(overlay, 0.85, vis, 0.15, 0, vis)
-            cv2.putText(vis, "INSPECCION CRONOLOGICA (A*): CONTINUIDAD HOMOGENEA (SIN CRUCES CONFLICTIVOS)", 
-                        (15, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (250, 248, 245), 1, cv2.LINE_AA)
-
-            _, buffer = cv2.imencode('.png', vis)
-            vis_b64 = 'data:image/png;base64,' + b64.b64encode(buffer).decode('utf-8')
-
-            nodes_count = min(1500, len(ink_indices[0]))
-            return {
-                'success': True,
-                'has_intersection': False,
-                'top_stroke': 'Trazos Independientes (Secuencia Homogénea)',
-                'is_signature_top': True,
-                'blank_signature_fraud': False,
-                'horizontal_path_cost': 0.0,
-                'vertical_path_cost': 0.0,
-                'nodes_explored_a_star': nodes_count,
-                'visualization_b64': vis_b64,
-                'chronology_verdict': (
-                    'CONFORMIDAD CRONOLOGICA: Se verifico la continuidad de flujos de tinta en todo el soporte. '
-                    'No existen superposiciones contradictorias ni evidencias de abuso de firma en blanco (Secuencia Normal).'
-                )
-            }
-
-        # Si HAY interseccion real, localizar el punto de cruce critico sobre la tinta
-        mid_idx = len(overlap_pts[0]) // 2
-        cy_cross = int(overlap_pts[0][mid_idx])
-        cx_cross = int(overlap_pts[1][mid_idx])
-
-        # Definir ventana de busqueda de A* alrededor de la interseccion real
-        win_w = min(100, int(w * 0.3))
-        win_h = min(80, int(h * 0.3))
-
-        start_h = (max(0, cx_cross - win_w // 2), cy_cross)
-        goal_h  = (min(w - 1, cx_cross + win_w // 2), cy_cross)
-
-        start_v = (cx_cross, max(0, cy_cross - win_h // 2))
-        goal_v  = (cx_cross, min(h - 1, cy_cross + win_h // 2))
-
-        path_h, cost_h, nodes_h = cls.a_star_search(cost_map, start_h, goal_h)
-        path_v, cost_v, nodes_v = cls.a_star_search(cost_map, start_v, goal_v)
-
-        vis = image_bgr.copy()
-        for pt in path_h:
-            cv2.circle(vis, pt, 2, (255, 200, 0), -1)
-        for pt in path_v:
-            cv2.circle(vis, pt, 2, (0, 140, 255), -1)
-
-        cv2.circle(vis, (cx_cross, cy_cross), 12, (0, 255, 0), 2)
-        cv2.putText(vis, "INTERSECCION CRITICA (A*)", (max(10, cx_cross - 90), max(25, cy_cross - 18)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1)
-
-        norm_cost_h = (cost_h / (len(path_h) + 1e-5)) if path_h else 999.0
-        norm_cost_v = (cost_v / (len(path_v) + 1e-5)) if path_v else 999.0
-
-        is_signature_top = norm_cost_v < norm_cost_h
-        top_stroke = "Trazo de Firma/Manuscrito (Continuo)" if is_signature_top else "Linea de Texto/Clausula (Superpuesta)"
-        blank_signature_fraud = bool(not is_signature_top)
-
-        _, buffer = cv2.imencode('.png', vis)
-        vis_b64 = 'data:image/png;base64,' + b64.b64encode(buffer).decode('utf-8')
-
-        return {
-            'success': True,
-            'has_intersection': True,
-            'top_stroke': top_stroke,
-            'is_signature_top': is_signature_top,
-            'blank_signature_fraud': blank_signature_fraud,
-            'horizontal_path_cost': round(float(norm_cost_h), 3),
-            'vertical_path_cost': round(float(norm_cost_v), 3),
-            'nodes_explored_a_star': nodes_h + nodes_v,
-            'visualization_b64': vis_b64,
-            'chronology_verdict': (
-                'CONFORMIDAD CRONOLOGICA: El trazo de la firma superpone fisicamente a la clausula. Secuencia de suscripcion normal.'
-                if is_signature_top else
-                'ALERTA MAXIMA DE FRAUDE: El trazo del texto/clausula superpone fisicamente a la firma. EVIDENCIA DE ABUSO DE FIRMA EN BLANCO (el papel fue firmado antes de la redaccion del texto).'
-            )
-        }
-
+        from .observations import analyze_visible_intersections
+        return analyze_visible_intersections(cls, image_bgr, ink_mask)

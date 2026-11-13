@@ -122,13 +122,17 @@ class DocumentProcessor:
         
         # 1. Detección de personas / rostros (Tonos de piel en espacio YCrCb)
         ycrcb = cv2.cvtColor(image, cv2.COLOR_BGR2YCrCb)
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         # Rango cromático estándar de pigmentación dérmica humana: Cr [133, 173], Cb [77, 127]
         skin_mask = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
+        # Papel crema e iluminación cálida también entran en YCrCb de piel.
+        # No tratarlos como personas: exigir saturación cromática apreciable.
+        skin_mask[hsv[:, :, 1] < 55] = 0
         skin_ratio = float(np.sum(skin_mask > 0) / total_pixels)
 
         if skin_ratio >= 0.12:
-            return False, f"RECHAZO DE ENTRADA: Se detecto la presencia de una persona o rostro en el campo visual (densidad de tono de piel: {skin_ratio*100:.1f}%). Por favor enfoque exclusivamente un documento sobre una superficie plana.", {
-                "reason": "FACE_OR_PERSON_DETECTED",
+            return False, f"RECHAZO DE ENTRADA: Predominan colores de fondo incompatibles con el soporte claro esperado ({skin_ratio*100:.1f}%). Enfoca el documento con iluminación neutra. Este filtro cromático no detecta rostros.", {
+                "reason": "UNSUITABLE_BACKGROUND_COLORS",
                 "skin_ratio": round(skin_ratio, 3)
             }
 

@@ -76,7 +76,10 @@ class InkAnalyzer:
             paper_bg = np.array([245.0, 245.0, 245.0], dtype=np.float32)
 
         # 2. Filtrado de cuadrículas tenues o bordes pre-impresos neutrales si hay manuscrito
-        is_printed_line = (hsv_full[:, :, 1] < 18) & (hsv_full[:, :, 2] > 115)
+        # El gris impreso no debe compararse con el bolígrafo azul como si
+        # fueran dos tintas manuscritas. La saturación separa cromatismo de
+        # oscuridad: también excluye impresión gris oscura, no sólo clara.
+        is_printed_line = hsv_full[:, :, 1] < 60
         clean_ink_mask = ink_mask.copy()
         if np.sum((ink_mask > 0) & (~is_printed_line)) > 80:
             clean_ink_mask[is_printed_line] = 0
@@ -132,7 +135,10 @@ class InkAnalyzer:
 
         # 1. Clustering K-Means con inicialización robusta
         kmeans = KMeans(n_clusters=k_clusters, random_state=42, n_init=15)
-        kmeans_labels = kmeans.fit_predict(features)
+        if len(np.unique(features, axis=0)) < 2:
+            kmeans_labels = np.zeros(len(features), dtype=np.int32)
+        else:
+            kmeans_labels = kmeans.fit_predict(features)
         unique_labels = np.unique(kmeans_labels)
 
         if len(unique_labels) < 2:
@@ -227,7 +233,7 @@ class InkAnalyzer:
         # Para concluir pericialmente la existencia de 2 tintas distintas (adición con segundo bolígrafo):
         s0 = c0_hsv[1]
         s1 = c1_hsv[1]
-        is_colored = bool(s0 > 25 or s1 > 25)
+        is_colored = bool(s0 >= 60 and s1 >= 60)
 
         if is_colored:
             # Caso A: Diferencia cromática de matiz clara (ej. azul vs negro, azul vs rojo, delta_hue >= 10)
@@ -237,17 +243,17 @@ class InkAnalyzer:
                 # Caso B: Mismo matiz nominal (ej. bolígrafo azul con lapicero azul o trazo manuscrito).
                 # Para descartar variaciones de presión, sombra o antialiasing de un mismo lapicero azul,
                 # se exige separación cromática pura en (a*, b*) que supere la dispersión intra-trazo (delta_e_ab >= 25.0):
-                chem_diff = bool(delta_e_ab >= 25.0 and raw_sil_score >= 0.40)
+                # Diferencias de presión y mezcla óptica con el papel cambian
+                # LAB sin implicar otro bolígrafo. Una foto RGB no identifica
+                # formulaciones químicas del mismo tono.
+                chem_diff = False
         else:
             # Tintas acromáticas / neutras:
-            chem_diff = bool(
-                (delta_e_total >= 28.0 and delta_norm_chroma >= 0.15 and raw_sil_score >= 0.40) or
-                (delta_e_total >= 35.0 and raw_sil_score >= 0.35)
-            )
+            chem_diff = False
 
         multiple_inks = bool(chem_diff and min_prop >= 0.08 and raw_sil_score >= 0.30)
         num_inks = 2 if multiple_inks else 1
-        reported_sil = round(raw_sil_score if multiple_inks else min(raw_sil_score, 0.12), 3)
+        reported_sil = round(raw_sil_score, 3)
 
         # 7. Segmentación Visual de Trazo Completo (Propagación Vectorizada por Centroides)
         y_all, x_all = np.where(clean_ink_mask > 0)
@@ -283,6 +289,7 @@ class InkAnalyzer:
 
         return {
             'success': True,
+            'analysis_scope': 'Agrupación de colores visibles; los trazos neutros se excluyen cuando existe escritura de color. No identifica composición química ni fecha de escritura.',
             'num_inks_detected': num_inks,
             'silhouette_score': reported_sil,
             'multiple_inks_detected': multiple_inks,
@@ -294,13 +301,12 @@ class InkAnalyzer:
             'ink_proportions': proportions if multiple_inks else {'Tinta #1 (Homogénea)': 1.0},
             'outliers_detected_dbscan': outlier_count,
             'scientific_conclusion': (
-                f'ALERTA FORENSE: Se detectaron {num_inks} tintas con formulaciones químicas distintas '
+                f'OBSERVACION CROMATICA: Se detectaron {num_inks} grupos de color en los trazos analizados '
                 f'(Delta Hue: {delta_hue}°, Delta E*ab: {delta_e_ab:.1f}, Silhouette: {reported_sil}). '
-                f'Incompatibilidad espectral concluyente entre instrumentos inscriptores '
-                f'(ej. diferentes fabricantes, marcas o lotes de bolígrafo del mismo color nominal).'
+                f'La diferencia de color requiere revisar el contexto; no demuestra adulteración ni composición química distinta.'
                 if multiple_inks else
-                f'HOMOGENEIDAD OPTICA: Consistencia espectral uniforme en todos los trazos '
+                f'SIN SEPARACION CROMATICA SIGNIFICATIVA en los trazos de color analizados '
                 f'(Delta Hue: {delta_hue}°, Delta E*ab: {delta_e_ab:.1f}). '
-                f'No se aprecian firmas químicas de un segundo instrumento inscriptor.'
+                f'Este resultado no acredita que se haya utilizado un único bolígrafo.'
             )
         }

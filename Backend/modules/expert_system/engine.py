@@ -26,14 +26,14 @@ class ForensicExpertSystem:
         if ink_res.get('multiple_inks_detected', False):
             rules_triggered.append({
                 'code': 'RULE-INK-01',
-                'name': 'Incompatibilidad Cromatica de Tintas',
-                'severity': 'CRITICA',
+                'name': 'Diferencia de color que requiere revisión contextual',
+                'severity': 'OBSERVACION',
                 'justification': (
-                    f"Se identificaron 2 formulaciones de tinta distintas (Silhouette Score: {ink_res.get('silhouette_score', 0):.3f}). "
-                    "Infiere la intervencion de un segundo instrumento inscriptor con posterioridad a la creacion original del documento."
+                    f"Se identificaron grupos cromáticos separados (Silhouette: {ink_res.get('silhouette_score', 0):.3f}). "
+                    "Puede haber varios colores legítimos. No determina composición, adulteración ni orden de escritura."
                 )
             })
-            fraud_points += 45
+            fraud_points += 15
 
         # Regla 2: Adulteracion de Cifras y Enmiendas
         tamper_res = findings.get('tampering', {})
@@ -52,15 +52,15 @@ class ForensicExpertSystem:
 
         # Regla 3: Leyes de Grafotecnia de Solange Pellat (Firma)
         sig_res = findings.get('signature', {})
-        if not sig_res.get('is_genuine', True):
+        if sig_res.get('anomaly_detected', False):
             tremor = sig_res.get('tremor_score', 0)
             rules_triggered.append({
                 'code': 'RULE-PELLAT-03',
-                'name': 'Segunda Ley de Solange Pellat (Accion Involuntaria e Inhibicion)',
+                'name': 'Irregularidad morfológica del trazo: requiere cotejo',
                 'severity': 'ALTA',
                 'justification': (
-                    f"La firma presenta elevado indice de temblores ({tremor:.1f}/100) y reduccion de velocidad cinematica. "
-                    "El esfuerzo deliberado de imitacion servil suprime el automatismo motor inconsciente del titular."
+                    f"Se observó rugosidad a varias escalas (índice {tremor:.1f}/100). "
+                    "Se necesita referencia y evaluación de calidad; no acredita falsificación ni velocidad real."
                 )
             })
             fraud_points += 45
@@ -68,28 +68,28 @@ class ForensicExpertSystem:
 
         # Regla 4: Abuso de Firma en Blanco (Cronologia de Cruce A*)
         chrono_res = findings.get('chronology', {})
-        if chrono_res.get('has_intersection', False) and chrono_res.get('blank_signature_fraud', False):
+        if chrono_res.get('has_intersection', False) and chrono_res.get('requires_review', False):
             rules_triggered.append({
                 'code': 'RULE-CHRONO-04',
-                'name': 'Cruce Inverso de Trazos (Firma en Blanco)',
-                'severity': 'MAXIMA',
+                'name': 'Cruce visible de trazos: orden no concluyente',
+                'severity': 'REVISION',
                 'justification': (
-                    "El algoritmo A* determino que el trazo del texto/clausula superpone ininterrumpidamente "
-                    "al trazo de la firma. Evidencia concluyente de que el documento fue firmado antes de la impresion del texto."
+                    "Se detectó una intersección entre línea y escritura de color. A* explora su conectividad. "
+                    "Los costos no prueban la secuencia física de las tintas ni confirman firma en blanco."
                 )
             })
-            fraud_points += 50
+            fraud_points += 25
 
         # Veredicto Global
         if fraud_points >= 40:
             global_verdict = "INDICIOS DE POSIBLE MANIPULACION DOCUMENTAL"
             verdict_color = "red"
         elif fraud_points >= 20:
-            global_verdict = "INDICIOS SOSPECHOSOS DE ENMIENDA (Requiere peritaje complementario)"
+            global_verdict = "OBSERVACIONES QUE REQUIEREN REVISION COMPLEMENTARIA"
             verdict_color = "amber"
         else:
-            global_verdict = "SIN INDICIOS DETECTADOS POR EL PROTOTIPO"
-            verdict_color = "emerald"
+            global_verdict = "SIN ALERTAS RELEVANTES EN LAS PRUEBAS APLICADAS" if not rules_triggered else "DIFERENCIAS VISUALES QUE REQUIEREN CONTEXTO"
+            verdict_color = "amber" if rules_triggered else "emerald"
 
         # Generar texto formal del Dictamen Pericial Judicial
         issued_at = datetime.now(timezone.utc)
@@ -111,7 +111,7 @@ class ForensicExpertSystem:
 
 ### 2. RESUMEN DE HALLAZGOS CIENTIFICOS
 1. **Espectrometria Optica de Tintas:**
-   - Formulaciones Quimicas Detectadas: {ink_res.get('num_inks_detected', 1)}
+   - Grupos de Color Reportados: {ink_res.get('num_inks_detected', 1)}
    - Indice de Separabilidad (Silhouette Score): {ink_res.get('silhouette_score', 0):.4f}
    - Evaluacion: {ink_res.get('scientific_conclusion', 'N/A')}
 
@@ -120,10 +120,10 @@ class ForensicExpertSystem:
    - Modelo Evaluador: {tamper_res.get('best_model_used', 'Ensemble')}
    - Estado: {tamper_res.get('verdict', 'Sin alteraciones')}
 
-3. **Cotejo de Firma y Dinamica Psicomotora (Deep Learning):**
+3. **Morfología de Firma (heurística multiescala):**
    - Veredicto de Firma: {sig_res.get('verdict', 'N/A')}
-   - Probabilidad de Autenticidad: {sig_res.get('authenticity_probability', 0)*100:.1f}%
-   - Indice de Presion Motora: {sig_res.get('motor_pressure_index', 0):.1f} / 100
+   - Autenticidad: No estimable sin referencia y validación con datos reales.
+   - Presión y velocidad físicas: No medibles con esta fotografía estática.
    - Indice de Temblores (Ataxia Grafica): {sig_res.get('tremor_score', 0):.1f} / 100
 
 4. **Cronologia de Trazos Cruzados (Algoritmo A*):**

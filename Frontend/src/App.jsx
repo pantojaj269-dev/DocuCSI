@@ -501,7 +501,7 @@ export default function App() {
         <nav className="flex flex-wrap gap-2 border-b border-[#E2DDD3] pb-2">
           {[
             { id: 'inspection', label: '1. Inspección & Visión', icon: Eye },
-            { id: 'inks', label: '2. Espectro de Tintas (No Supervisado)', icon: Layers },
+            { id: 'inks', label: '2. Color de Tintas (No Supervisado)', icon: Layers },
             { id: 'tampering', label: '3. Adulteración de Cifras (Supervisado)', icon: Search },
             { id: 'signature', label: '4. Firma & Dinámica Motora', icon: Activity },
             { id: 'chronology', label: '5. Cruce de Trazos (A*)', icon: Cpu },
@@ -601,16 +601,16 @@ export default function App() {
         {/* ALERTA DE RESULTADO RÁPIDO SI YA SE ANALIZÓ */}
         {report && (
           <div className={`p-4 rounded-xl border flex items-center justify-between ${
-            report.fraud_points >= 40 
+            report.verdict_color === 'red'
               ? 'bg-[#FDF2F2] border-[#F8D4D4] text-[#7A1F1D]' 
-              : report.fraud_points >= 20 
+              : report.verdict_color === 'amber'
                 ? 'bg-[#FFFBEB] border-amber-300 text-[#854D0E]' 
                 : 'bg-[#F2F7F2] border-[#D1E7D3] text-[#1E4620]'
           }`}>
             <div className="flex items-center gap-3">
-              {report.fraud_points >= 40 ? (
+              {report.verdict_color === 'red' ? (
                 <XCircle className="w-7 h-7 text-rose-500" />
-              ) : report.fraud_points >= 20 ? (
+              ) : report.verdict_color === 'amber' ? (
                 <AlertTriangle className="w-7 h-7 text-amber-500" />
               ) : (
                 <CheckCircle2 className="w-7 h-7 text-emerald-500" />
@@ -722,8 +722,8 @@ export default function App() {
             <div className="lg:col-span-2 bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-4 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
-                  <h3 className="font-semibold text-[#1C1917] text-sm">Segmentación Espectral por Clústeres de Color</h3>
-                  <p className="text-xs text-[#78716C]">K-Means agrupa los píxeles de tinta en el espacio LAB/HSV para revelar bolígrafos distintos</p>
+                  <h3 className="font-semibold text-[#1C1917] text-sm">Segmentación por Grupos de Color</h3>
+                  <p className="text-xs text-[#78716C]">K-Means agrupa colores en LAB/HSV; no identifica composición química ni demuestra adulteración</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs">
                   <div className="flex items-center gap-1.5">
@@ -732,7 +732,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="w-3 h-3 rounded-full bg-rose-500"></span>
-                    <span>Tinta Adulterada (Cluster 1)</span>
+                    <span>Segundo grupo de color (Cluster 1)</span>
                   </div>
                 </div>
               </div>
@@ -756,14 +756,14 @@ export default function App() {
                   <span className="text-3xl font-bold font-mono text-[#8B5E3C]">
                     {inks ? inks.silhouette_score : '--'}
                   </span>
-                  <span className="text-xs text-[#78716C]">Umbral Pericial: ≥ 0.380</span>
+                  <span className="text-xs text-[#78716C]">Separación exploratoria, sin umbral forense validado</span>
                 </div>
                 
                 {/* Barra de progreso de Silhouette */}
                 <div className="w-full bg-[#EFECE6] h-2.5 rounded-full overflow-hidden">
                   <div 
                     className={`h-full transition-all duration-700 ${
-                      (inks?.silhouette_score || 0) >= 0.38 ? 'bg-rose-500' : 'bg-emerald-500'
+                      inks?.multiple_inks_detected ? 'bg-amber-500' : 'bg-stone-500'
                     }`}
                     style={{ width: `${Math.max(5, Math.min(100, ((inks?.silhouette_score || 0) + 1) * 50))}%` }}
                   />
@@ -1005,9 +1005,9 @@ export default function App() {
                             <div className="font-bold text-emerald-900 text-[11px]">Firma Izquierda</div>
                             <div className="text-[10px] text-emerald-700 font-semibold mb-2">Patrón Original</div>
                             <div className="space-y-1 text-[11px] text-emerald-950">
-                              <div>Temblores: <strong>{dualComparisonResults.left_signature?.tremor_score}</strong>/100</div>
-                              <div>Velocidad: <strong>{dualComparisonResults.left_signature?.kinematic_speed}</strong>/100</div>
-                              <div>Presión: <strong>{dualComparisonResults.left_signature?.motor_pressure}</strong>/100</div>
+                              <div>Proporción ancho/alto: <strong>{dualComparisonResults.left_signature?.aspect_ratio}</strong></div>
+                              <div>Densidad de tinta: <strong>{((dualComparisonResults.left_signature?.ink_density || 0)*100).toFixed(1)}%</strong></div>
+                              <div>Contornos: <strong>{dualComparisonResults.left_signature?.contour_count}</strong></div>
                             </div>
                           </div>
 
@@ -1019,12 +1019,12 @@ export default function App() {
                           }`}>
                             <div className="font-bold text-[11px]">Firma Derecha</div>
                             <div className="text-[10px] font-semibold mb-2">
-                              {dualComparisonResults.is_forgery ? 'Imitación Sospechosa' : 'Genuina'}
+                              {dualComparisonResults.is_forgery ? 'Divergencia visual' : 'Similitud visual'}
                             </div>
                             <div className="space-y-1 text-[11px]">
-                              <div>Temblores: <strong>{dualComparisonResults.right_signature?.tremor_score}</strong>/100</div>
-                              <div>Velocidad: <strong>{dualComparisonResults.right_signature?.kinematic_speed}</strong>/100</div>
-                              <div>Presión: <strong>{dualComparisonResults.right_signature?.motor_pressure}</strong>/100</div>
+                              <div>Proporción ancho/alto: <strong>{dualComparisonResults.right_signature?.aspect_ratio}</strong></div>
+                              <div>Densidad de tinta: <strong>{((dualComparisonResults.right_signature?.ink_density || 0)*100).toFixed(1)}%</strong></div>
+                              <div>Contornos: <strong>{dualComparisonResults.right_signature?.contour_count}</strong></div>
                             </div>
                           </div>
                         </div>
@@ -1054,12 +1054,14 @@ export default function App() {
             <div className="lg:col-span-2 bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-5 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
-                  <h3 className="font-semibold text-[#1C1917] text-sm">Verificación de Firma y Diagnóstico Neuromotor</h3>
+                  <h3 className="font-semibold text-[#1C1917] text-sm">Inspección Morfológica de Firma</h3>
                   <p className="text-xs text-[#78716C]">Estimación heurística de morfología y temblores; entrenamiento MLP y Ridge con datos sintéticos para demostración</p>
                 </div>
                 {signature && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold uppercase tracking-wider ${
-                    signature.is_genuine 
+                    signature.morphology_status === 'inconclusive'
+                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                      : !signature.anomaly_detected
                       ? 'bg-[#EFECE6] text-[#8B5E3C] border border-[#DDD7CC]' 
                       : 'bg-rose-950 text-rose-400 border border-rose-800'
                   }`}>
@@ -1071,44 +1073,44 @@ export default function App() {
               {/* 3 MEDIDORES CINEMÁTICOS */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Presión Motora Estimada</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Cambio de rugosidad</span>
                   <div className="text-2xl font-bold font-mono text-[#8B5E3C]">
-                    {signature ? `${signature.motor_pressure_index}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
+                    {signature ? `${(signature.roughness_growth * 100).toFixed(2)}%` : '--'}
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
-                    <div className="bg-[#8B5E3C] h-full" style={{ width: `${signature?.motor_pressure_index || 0}%` }} />
+                    <div className="bg-[#8B5E3C] h-full" style={{ width: `${signature?.tremor_score || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Índice heurístico; no mide presión física</span>
+                  <span className="text-[11px] text-[#A8A29E]">Diferencia entre dos escalas del contorno</span>
                 </div>
 
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Velocidad Cinemática</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Autenticidad / autoría</span>
                   <div className="text-2xl font-bold font-mono text-[#8B5E3C]">
-                    {signature ? `${signature.kinematic_speed_index}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
+                    <span className="text-base">{signature ? 'No determinada' : '--'}</span>
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
-                    <div className="bg-emerald-500 h-full" style={{ width: `${signature?.kinematic_speed_index || 0}%` }} />
+                    <div className="bg-stone-300 h-full w-full" />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Ley de Pellat 1: Fluidez subconsciente</span>
+                  <span className="text-[11px] text-[#A8A29E]">Requiere muestras de referencia</span>
                 </div>
 
                 <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6] flex flex-col gap-2">
-                  <span className="text-xs text-[#78716C] uppercase font-semibold">Ataxia / Micro-Temblores</span>
+                  <span className="text-xs text-[#78716C] uppercase font-semibold">Índice de irregularidad</span>
                   <div className="text-2xl font-bold font-mono text-rose-400">
                     {signature ? `${signature.tremor_score}` : '--'}<span className="text-xs text-[#A8A29E]">/100</span>
                   </div>
                   <div className="w-full bg-[#EFECE6] h-2 rounded-full overflow-hidden">
                     <div className="bg-rose-500 h-full" style={{ width: `${signature?.tremor_score || 0}%` }} />
                   </div>
-                  <span className="text-[11px] text-[#A8A29E]">Ley de Pellat 2: Esfuerzo inhibitorio</span>
+                  <span className="text-[11px] text-[#A8A29E]">Heurística visual, no probabilidad de fraude</span>
                 </div>
               </div>
 
               {/* EXPLICACIÓN GRAFOTÉCNICA */}
               <div className="bg-[#FAF9F5] p-4 rounded-xl border border-[#E5E0D6]">
-                <h4 className="text-xs font-semibold text-[#44403C] uppercase tracking-wider mb-2">Dictamen Pericial de Autenticidad</h4>
+                <h4 className="text-xs font-semibold text-[#44403C] uppercase tracking-wider mb-2">Observación Morfológica</h4>
                 <p className="text-xs text-[#44403C] leading-relaxed">
-                  {signature ? signature.explanation : "El módulo clasifica si la firma exhibe los automatismos neuromotores naturales del autor o el titubeo lento de una falsificación."}
+                  {signature ? signature.explanation : "El módulo analiza irregularidades del contorno. Una firma aislada no permite determinar autoría ni autenticidad."}
                 </p>
               </div>
             </div>
@@ -1153,19 +1155,17 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
                   <h3 className="font-semibold text-[#1C1917] text-sm">Inspección de Continuidad en Intersecciones (Algoritmo A*)</h3>
-                  <p className="text-xs text-[#78716C]">Búsqueda de trayectoria óptima de flujo de tinta para resolver el fraude de "Firma en Blanco"</p>
+                  <p className="text-xs text-[#78716C]">Detección de cruces y búsqueda de conectividad; el orden físico de escritura requiere peritaje complementario</p>
                 </div>
                 {chronology && (
                   <span className={`text-xs px-3 py-1 rounded-full font-bold ${
-                    chronology.blank_signature_fraud 
-                      ? 'bg-rose-100 text-rose-800 border border-rose-300' 
+                    chronology.has_intersection
+                      ? 'bg-amber-50 text-amber-800 border border-amber-300'
                       : 'bg-emerald-50 text-emerald-700 border border-emerald-300'
                   }`}>
-                    {chronology.blank_signature_fraud 
-                      ? 'FIRMA EN BLANCO DETECTADA' 
-                      : chronology.has_intersection 
-                        ? 'SECUENCIA NORMAL (FIRMA SUPERIOR)' 
-                        : 'SECUENCIA NORMAL (SIN CRUCE CONFLICTIVO)'}
+                    {chronology.has_intersection
+                      ? 'CRUCE DETECTADO: ORDEN NO CONCLUYENTE'
+                      : 'SIN CRUCE DETECTADO POR ESTE METODO'}
                   </span>
                 )}
               </div>
@@ -1183,7 +1183,7 @@ export default function App() {
                     <CheckCircle2 className="w-12 h-12 text-emerald-600" />
                     <h4 className="font-semibold text-[#1C1917] text-sm">Continuidad Homogénea Verificada</h4>
                     <p className="text-xs text-[#78716C] leading-relaxed">
-                      {chronology.chronology_verdict || "Se verificó la continuidad de trazos con el algoritmo A*. No se detectaron cruces de trazo contradictorios ni sobreescrituras."}
+                      {chronology.chronology_verdict}
                     </p>
                   </div>
                 ) : (
@@ -1210,13 +1210,13 @@ export default function App() {
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Firma:</span>
                     <span className="text-[#8B5E3C] font-mono font-bold">
-                      {chronology && chronology.has_intersection ? chronology.horizontal_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
+                      {chronology && chronology.has_intersection ? (chronology.horizontal_path_cost ?? 'Sin recorrido') : (chronology ? 'No ejecutado' : '--')}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5 border-b border-[#E5E0D6]">
                     <span className="text-[#78716C]">Costo Trazo Texto:</span>
                     <span className="text-orange-500 font-mono font-bold">
-                      {chronology && chronology.has_intersection ? chronology.vertical_path_cost : (chronology ? 'N/A (Independiente)' : '--')}
+                      {chronology && chronology.has_intersection ? (chronology.vertical_path_cost ?? 'Sin recorrido') : (chronology ? 'No ejecutado' : '--')}
                     </span>
                   </div>
                   <div className="flex justify-between py-1.5">
@@ -1263,9 +1263,9 @@ export default function App() {
               <div className="space-y-6 text-sm text-[#44403C]">
                 {/* TARJETA DE VEREDICTO */}
                 <div className={`p-5 rounded-xl border ${
-                  report.fraud_points >= 40 
+                  report.verdict_color === 'red'
                     ? 'bg-rose-50 border-rose-200 text-rose-900' 
-                    : report.fraud_points >= 20 
+                    : report.verdict_color === 'amber'
                       ? 'bg-amber-50 border-amber-200 text-amber-900' 
                       : 'bg-emerald-50 border-emerald-200 text-emerald-900'
                 }`}>

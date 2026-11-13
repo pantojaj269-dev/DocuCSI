@@ -30,7 +30,7 @@ from modules.expert_system.engine import ForensicExpertSystem
 app = FastAPI(
     title="DocuCSI - Suite Inteligente de Peritaje Documental Forense",
     description="Plataforma Neuro-Simbolica de Investigacion Criminalistica de Documentos",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -53,7 +53,7 @@ class Base64Payload(BaseModel):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "online", "system": "DocuCSI Forensic Suite", "version": "1.0.0"}
+    return {"status": "online", "system": "DocuCSI Forensic Suite", "version": "1.1.0"}
 
 @app.get("/api/samples")
 def get_sample_documents():
@@ -145,6 +145,7 @@ def analyze_full_document(payload: Base64Payload):
 
         # 6. Analisis de Cronologia de Cruce con Algoritmo A*
         chronology_res = ChronologyAnalyzer.analyze_intersection(rectified, ink_mask)
+        signature_res = signature_verifier.account_for_overlap(signature_res, chronology_res, rectified.shape)
         record_stage('chronology')
 
         # 7. Evaluacion del Sistema Experto y Dictamen Judicial

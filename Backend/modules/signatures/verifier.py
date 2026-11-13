@@ -30,6 +30,22 @@ class SignatureMLP(nn.Module):
         return self.net(x)
 
 class SignatureVerifier:
+    @staticmethod
+    def account_for_overlap(result, chronology, image_shape):
+        """No atribuir al gesto de firma la rugosidad de trazos superpuestos."""
+        point = chronology.get('crossing_point')
+        h, w = image_shape[:2]
+        if point and point[0] >= w * .45 and h * .55 <= point[1] < h * .95:
+            result = dict(result)
+            result['raw_morphology_status'] = result.get('morphology_status')
+            result.update({
+                'morphology_status': 'inconclusive',
+                'anomaly_detected': False,
+                'verdict': 'FIRMA CON CRUCE: MORFOLOGIA NO CONCLUYENTE',
+                'explanation': 'La región de firma contiene un cruce con otro trazo. La rugosidad del contorno mezclado no se atribuye automáticamente a la firma; se requiere aislar los trazos y realizar cotejo.',
+            })
+        return result
+
     def __init__(self):
         self.device = torch.device('cpu')
         torch.manual_seed(42)
@@ -152,48 +168,59 @@ class SignatureVerifier:
             sig_roi_gray = gray[int(h * 0.55):int(h * 0.95), :]
             sig_roi_mask = ink_mask[int(h * 0.55):int(h * 0.95), :]
 
-        features = self._extract_signature_features(sig_roi_gray, sig_roi_mask)
+        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
+        roi_saturation = hsv[int(h * 0.55):int(h * 0.95), int(w * 0.45):, 1]
+        if roi_saturation.shape == sig_roi_mask.shape and np.count_nonzero((sig_roi_mask > 0) & (roi_saturation >= 60)) >= 40:
+            sig_roi_mask = sig_roi_mask.copy()
+            sig_roi_mask[roi_saturation < 60] = 0
 
         # 2. Medicion pericial de temblores (Ataxia Grafica / Segunda Ley de Pellat)
-        contours, _ = cv2.findContours(sig_roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        # Suavizado leve contra escalones de rasterización. Comparamos dos
+        # escalas sobre un contorno de tamaño canónico; no usamos su longitud
+        # absoluta como prueba de falsificación.
+        smooth_mask = cv2.threshold(cv2.GaussianBlur(sig_roi_mask, (3, 3), 0), 100, 255, cv2.THRESH_BINARY)[1]
+        contours, _ = cv2.findContours(smooth_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        usable = False
+        roughness_growth = 0.0
         if contours:
             cnt = max(contours, key=lambda c: len(c))
-            peri = float(cv2.arcLength(cnt, True))
-            approx = cv2.approxPolyDP(cnt, 2.5, True)
-            approx_peri = float(cv2.arcLength(approx, True))
-            roughness = (peri - approx_peri) / (peri + 1e-5)
-            # Umbral de temblor pericial: trazo fluido < 0.058; titubeante > 0.060
-            tremor_score = float(np.clip((roughness - 0.045) * 1800.0, 12.0, 92.0))
-        else:
-            tremor_score = 15.0
-
-        # Evaluacion con Red Neuronal PyTorch (MLP)
-        is_genuine = bool(tremor_score < 38.0)
-        prob_genuine = float(0.93 - (tremor_score * 0.008)) if is_genuine else float(0.18 + (100.0 - tremor_score) * 0.001)
-        prob_genuine = float(np.clip(prob_genuine, 0.05, 0.98))
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            usable = cw >= max(30, w * 0.04) and ch >= 8 and len(cnt) >= 40
+            if usable:
+                canonical = ((cnt.astype(np.float32) - [x, y]) * (300.0 / max(cw, ch))).astype(np.float32)
+                perimeter = cv2.arcLength(canonical, True)
+                fine = cv2.arcLength(cv2.approxPolyDP(canonical, 1.0, True), True)
+                coarse = cv2.arcLength(cv2.approxPolyDP(canonical, 3.0, True), True)
+                roughness_growth = max(0.0, (fine - coarse) / max(perimeter, 1.0))
+        tremor_score = float(np.clip(roughness_growth * 2000.0, 0.0, 100.0))
+        anomaly_detected = bool(usable and roughness_growth >= 0.03)
+        status = 'irregular' if anomaly_detected else 'regular' if usable and roughness_growth < 0.02 else 'inconclusive'
 
         # Estimacion de Presion Motora y Velocidad
-        estimated_pressure = float(np.clip(68.0 - (tremor_score * 0.3), 15.0, 95.0))
-        speed_score = float(np.clip(100.0 - (tremor_score * 0.85), 15.0, 95.0))
 
-        verdict = "AUTENTICA" if is_genuine else "FALSIFICACION POR IMITACION"
-        if is_genuine and tremor_score > 32.0:
-            verdict = "SOSPECHA DE COACCION / ESTRÈS MOTOR"
+        verdict = {
+            'regular': 'SIN IRREGULARIDAD MORFOLOGICA DESTACADA',
+            'irregular': 'IRREGULARIDAD DE TRAZO: REQUIERE COTEJO',
+            'inconclusive': 'MORFOLOGIA NO CONCLUYENTE: REQUIERE COTEJO',
+        }[status]
 
         return {
             'success': True,
             'verdict': verdict,
-            'is_genuine': is_genuine,
-            'authenticity_probability': round(prob_genuine, 4),
-            'motor_pressure_index': round(estimated_pressure, 1),
-            'kinematic_speed_index': round(speed_score, 1),
+            'is_genuine': None,
+            'authenticity_probability': None,
+            'anomaly_detected': anomaly_detected,
+            'morphology_status': status,
+            'roughness_growth': round(roughness_growth, 5),
+            'motor_pressure_index': None,
+            'kinematic_speed_index': None,
             'tremor_score': round(tremor_score, 1),
             'training_epochs_loss': self.loss_history[::2],
             'model_architecture': 'Heurística morfológica de temblores; MLP y Ridge entrenados con datos sintéticos para demostración',
             'explanation': (
-                f'DIAGNOSTICO NEUROMOTOR: Gesto fluido con automatismo espontaneo (Velocidad: {speed_score:.0f}/100, Temblores: {tremor_score:.0f}/100). Coincidente con firma indubitada.'
-                if is_genuine else
-                f'ANOMALIA DE EJECUCION: Elevado indice de titubeo e inhibicion motora (Temblores: {tremor_score:.0f}/100, Velocidad reducida: {speed_score:.0f}/100). Sintoma caracteristico de calco o imitacion servil lenta (Segunda Ley de Solange Pellat).'
+                f'Contorno evaluado a dos escalas; índice de irregularidad {tremor_score:.1f}/100. '
+                'La rugosidad puede depender de la captura, del útil o de variación natural. '
+                'Sin una firma de referencia no se determina autoría, autenticidad, coacción, presión física ni velocidad real.'
             )
         }
 
@@ -273,7 +300,7 @@ class SignatureVerifier:
         )
 
         if is_forgery:
-            verdict = "FALSIFICACION POR IMITACION SERVIL CONFIRMADA"
+            verdict = "DIVERGENCIA MORFOLOGICA: REQUIERE REVISION"
             reasons = []
             if aspect_diff >= 0.18:
                 reasons.append(f"deformacion de proporciones espaciales ({aspect_diff*100:.1f}%)")
@@ -287,16 +314,15 @@ class SignatureVerifier:
                 reasons.append("irregularidades en la trayectoria y temblores de ejecucion")
 
             conclusion = (
-                f"El cotejo grafotecnico evidencia que la firma derecha intenta reproducir la silueta del modelo "
-                f"(Similitud aparente: {morph_similarity*100:.1f}%), pero delata su caracter apocrifo mediante: "
-                f"{', '.join(reasons)}. "
-                f"Este patron de lentitud e inhibicion motora es la prueba clasica de imitacion servil (Segunda Ley de Solange Pellat)."
+                f"Similitud descriptiva: {morph_similarity*100:.1f}%. Se observan diferencias en proporciones, "
+                "distribución de tinta o contornos. La comparación de una imagen no determina autoría ni "
+                "presión o velocidad físicas; requiere muestras de referencia y revisión especializada."
             )
         else:
-            verdict = "COINCIDENCIA AUTENTICA (MISMO AUTOR)"
+            verdict = "SIMILITUD MORFOLOGICA: AUTORIA NO DETERMINADA"
             conclusion = (
-                f"Ambas firmas exhiben fluidez cinematica equivalente (Similitud: {morph_similarity*100:.1f}%), "
-                f"escasos temblores de ejecucion y automatismo espontaneo propio de la memoria muscular de un mismo titular inscriptor."
+                f"Similitud descriptiva: {morph_similarity*100:.1f}%. No se superaron los umbrales de divergencia "
+                "morfológica del prototipo. La similitud no demuestra que las firmas sean del mismo autor."
             )
 
         # 6. Dibujar visualizacion anotada con bounding boxes
@@ -309,7 +335,7 @@ class SignatureVerifier:
 
         # Caja Derecha (Rojo si es falsificacion, Verde si es autentica)
         color_r = (30, 30, 225) if is_forgery else (40, 180, 50)
-        label_r = "DUBITADA: FALSIFICACION" if is_forgery else "DUBITADA: COINCIDENTE"
+        label_r = "DUBITADA: DIVERGENCIA" if is_forgery else "DUBITADA: SIMILITUD"
         cv2.rectangle(annotated, (xr_global, yr), (xr_global + wr, yr + hr), color_r, 2, cv2.LINE_AA)
         cv2.putText(annotated, label_r, (xr_global, max(20, yr - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, color_r, 1, cv2.LINE_AA)
 
@@ -322,18 +348,18 @@ class SignatureVerifier:
             'is_forgery': is_forgery,
             'morphological_similarity': round(morph_similarity, 3),
             'left_signature': {
-                'label': 'Firma Indubitada (Patrón Genuino)',
-                'tremor_score': round(tremor_l, 1),
-                'kinematic_speed': round(speed_l, 1),
-                'motor_pressure': round(pressure_l, 1),
-                'status': 'GENUINA'
+                'label': 'Referencia proporcionada por el usuario',
+                'aspect_ratio': round(float(feats_l[0]), 3),
+                'ink_density': round(float(feats_l[1]), 3),
+                'contour_count': len(cnts_l),
+                'status': 'REFERENCIA'
             },
             'right_signature': {
-                'label': 'Firma Dubitada (Cuestionada / Imitación)',
-                'tremor_score': round(tremor_r, 1),
-                'kinematic_speed': round(speed_r, 1),
-                'motor_pressure': round(pressure_r, 1),
-                'status': 'FALSIFICADA' if is_forgery else 'GENUINA'
+                'label': 'Muestra comparada',
+                'aspect_ratio': round(float(feats_r[0]), 3),
+                'ink_density': round(float(feats_r[1]), 3),
+                'contour_count': len(cnts_r),
+                'status': 'DIVERGENTE' if is_forgery else 'SIMILAR'
             },
             'delta_tremor': round(diff_tremor, 1),
             'delta_speed': round(diff_speed, 1),
