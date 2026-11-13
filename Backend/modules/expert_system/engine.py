@@ -23,7 +23,9 @@ class ForensicExpertSystem:
 
         # Regla 1: Adulteracion Cromatica de Tintas
         ink_res = findings.get('inks', {})
-        if ink_res.get('multiple_inks_detected', False):
+        mixed_neutral = ink_res.get('mixed_colored_neutral', False)
+        chromatic_multiple = ink_res.get('chromatic_multiple_detected', ink_res.get('multiple_inks_detected', False) and not mixed_neutral)
+        if chromatic_multiple:
             rules_triggered.append({
                 'code': 'RULE-INK-01',
                 'name': 'Diferencia de color que requiere revisión contextual',
@@ -35,17 +37,29 @@ class ForensicExpertSystem:
             })
             fraud_points += 15
 
+        if mixed_neutral:
+            rules_triggered.append({
+                'code': 'OBS-NEUTRAL-01',
+                'name': 'Mezcla de trazos de color y negros/grises',
+                'severity': 'CONTEXTO',
+                'justification': (
+                    'Hay evidencia visible de trazos neutros además del color. Puede corresponder a lápiz, '
+                    'bolígrafo negro o impresión. No se elimina por asumir que es un formulario; '
+                    'se requiere revisar el contexto y no se certifica legitimidad.'
+                ),
+            })
+
         # Regla 2: Adulteracion de Cifras y Enmiendas
         tamper_res = findings.get('tampering', {})
         t_count = tamper_res.get('tampered_count', 0)
         if t_count > 0:
             rules_triggered.append({
                 'code': 'RULE-TAMPER-02',
-                'name': 'Adulteracion Morfologica de Cifras / Enmienda',
-                'severity': 'CRITICA',
+                'name': 'Señal morfológica del clasificador ilustrativo',
+                'severity': 'REVISION',
                 'justification': (
                     f"El clasificador {tamper_res.get('best_model_used', 'Supervisado')} detecto {t_count} parches con "
-                    "discontinuidad angular en los trazos y acumulacion anomala de ramificaciones (branch points)."
+                    "rasgos morfológicos atípicos según su entrenamiento sintético. No es una probabilidad calibrada ni acredita adulteración."
                 )
             })
             fraud_points += 40
@@ -88,8 +102,22 @@ class ForensicExpertSystem:
             global_verdict = "OBSERVACIONES QUE REQUIEREN REVISION COMPLEMENTARIA"
             verdict_color = "amber"
         else:
-            global_verdict = "SIN ALERTAS RELEVANTES EN LAS PRUEBAS APLICADAS" if not rules_triggered else "DIFERENCIAS VISUALES QUE REQUIEREN CONTEXTO"
-            verdict_color = "amber" if rules_triggered else "emerald"
+            global_verdict = "SIN DIFERENCIA RESUELTA: LEGITIMIDAD NO DETERMINADA" if not rules_triggered else "MEZCLA O DIFERENCIAS VISUALES: REQUIERE CONTEXTO"
+            verdict_color = "amber"
+
+        limitations = [
+            'Una fotografía no certifica legitimidad o fraude ni identifica con certeza grafito, tinta o impresión.',
+            'Las diferencias no resueltas pueden quedar por debajo del contraste o resolución de esta captura.',
+            'El clasificador de formas se entrenó con datos sintéticos; sus métricas no son validación de documentos reales.',
+        ]
+        quality = findings.get('quality', {})
+        limitations.extend(quality.get('warnings', []))
+        if not ink_res.get('success', False):
+            limitations.append('El análisis de trazos no contó con evidencia suficiente.')
+        if sig_res.get('morphology_status') == 'inconclusive':
+            limitations.append('La región de posible firma no pudo evaluarse de forma concluyente.')
+        if tamper_res.get('evidence_status') == 'not_evaluable':
+            limitations.append('No se localizaron caracteres compatibles con el clasificador de formas.')
 
         # Generar texto formal del Dictamen Pericial Judicial
         issued_at = datetime.now(timezone.utc)
@@ -138,7 +166,9 @@ class ForensicExpertSystem:
             for r in rules_triggered:
                 report_text += f"- **[{r['code']}] {r['name']}** ({r['severity']}):\n  {r['justification']}\n\n"
         else:
-            report_text += "- No se activaron alertas de transgresion a los principios grafotecnicos ni procesales.\n\n"
+            report_text += "- No se activaron los criterios del prototipo. Esto no acredita legitimidad ni ausencia de modificaciones.\n\n"
+
+        report_text += '### LIMITES DE LA EVALUACION\n' + '\n'.join('- ' + item for item in limitations) + '\n\n'
 
         report_text += f"""---
 
@@ -156,6 +186,9 @@ class ForensicExpertSystem:
             'fraud_points': min(100, fraud_points),
             'global_verdict': global_verdict,
             'verdict_color': verdict_color,
+            'authenticity_determined': False,
+            'limitations': limitations,
+            'assessment_status': 'requires_context' if rules_triggered else 'limited_no_signal',
             'rules_triggered_count': len(rules_triggered),
             'rules_triggered': rules_triggered,
             'official_report_markdown': report_text

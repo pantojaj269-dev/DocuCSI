@@ -732,7 +732,7 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="w-3 h-3 rounded-full bg-rose-500"></span>
-                    <span>Segundo grupo de color (Cluster 1)</span>
+                    <span>Otro color / trazos neutros</span>
                   </div>
                 </div>
               </div>
@@ -772,6 +772,12 @@ export default function App() {
                 <p className="text-xs text-[#44403C] leading-relaxed bg-[#FAF9F5]/60 p-3 rounded border border-[#E5E0D6]">
                   {inks ? inks.scientific_conclusion : "Evalúa cuantitativamente la separabilidad entre grupos de tinta."}
                 </p>
+                {inks && <div className="text-xs text-[#44403C] border border-violet-200 bg-violet-50 rounded p-3 space-y-1">
+                  <p><strong>Inventario de trazos:</strong> color {inks.colored_pixel_count ?? '—'} px · negros/grises {inks.neutral_pixel_count ?? '—'} px.</p>
+                  <p>Violeta: trazos neutros conservados. Pueden ser lápiz, tinta negra o impresión; la foto no determina cuál.</p>
+                  {inks.mixed_colored_neutral && <p className="font-semibold">Mezcla de color y neutros detectada: requiere contexto.</p>}
+                  <p>{inks.silhouette_scope}</p>
+                </div>}
               </div>
 
               {/* GRÁFICO PCA DE DISPERSIÓN 2D */}
@@ -822,7 +828,7 @@ export default function App() {
               <div className="flex items-center justify-between border-b border-[#E5E0D6] pb-3">
                 <div>
                   <h3 className="font-semibold text-[#1C1917] text-sm">Detección de Trazos Anómalos y Enmiendas en Cifras</h3>
-                  <p className="text-xs text-[#78716C]">Identificación de adiciones morfológicas que alteran el valor nominal (ej. añadir un cero o alterar dígitos)</p>
+                  <p className="text-xs text-[#78716C]">Señales morfológicas de un clasificador entrenado con datos sintéticos; no certifica legitimidad ni fraude</p>
                 </div>
                 <span className="text-xs px-2.5 py-1 rounded bg-[#EFECE6] text-[#8B5E3C] font-mono border border-[#D8D1C3]">
                   Clasificador: {tampering?.best_model_used || "Ensemble"}
@@ -842,6 +848,11 @@ export default function App() {
 
             <div className="flex flex-col gap-6">
               {/* TABLA COMPARATIVA DE MODELOS SUPERVISADOS (SÍLABO) */}
+              {tampering && <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
+                <p className="font-semibold">{tampering.verdict}</p>
+                <p>{tampering.model_scope}</p>
+                <p>Regiones evaluadas: {tampering.evaluated_regions ?? '—'}.</p>
+              </div>}
               <div className="bg-white border border-[#E5E0D6] rounded-xl p-5 flex flex-col gap-3 shadow-[0_1px_3px_rgba(0,0,0,0.03)]">
                 <h4 className="font-semibold text-[#44403C] text-xs uppercase tracking-wider flex items-center gap-2">
                   <BarChart2 className="w-4 h-4 text-[#8B5E3C]" />
@@ -1242,8 +1253,8 @@ export default function App() {
                   <Scale className="w-6 h-6 text-[#8B5E3C]" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-[#1C1917]">Dictamen Pericial Oficial</h2>
-                  <p className="text-xs text-[#78716C]">Acta Judicial con Cadena de Custodia Criptográfica</p>
+                  <h2 className="text-lg font-bold text-[#1C1917]">Informe de Observaciones del Prototipo</h2>
+                  <p className="text-xs text-[#78716C]">Análisis visual orientativo e identificación SHA-256 del archivo</p>
                 </div>
               </div>
 
@@ -1269,11 +1280,17 @@ export default function App() {
                       ? 'bg-amber-50 border-amber-200 text-amber-900' 
                       : 'bg-emerald-50 border-emerald-200 text-emerald-900'
                 }`}>
-                  <div className="text-xs uppercase font-bold tracking-wider opacity-75">Conclusión del Tribunal Pericial:</div>
+                  <div className="text-xs uppercase font-bold tracking-wider opacity-75">Resultado orientativo; legitimidad no determinada:</div>
                   <div className="text-2xl font-bold mt-1">{report.global_verdict}</div>
                   <div className="text-xs mt-2 opacity-90">
                     Hash SHA-256 de Evidencia: <code className="font-mono bg-white px-2 py-0.5 rounded border border-stone-200 text-stone-800">{report.doc_hash}</code>
                   </div>
+                </div>
+
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-xs text-amber-950 space-y-2">
+                  <p className="font-semibold">Este análisis no certifica que el documento sea legítimo o falso.</p>
+                  {report.limitations?.map((limitation, index) => <p key={index}>{limitation}</p>)}
+                  {analysisResults?.quality_analysis?.warnings?.map((warning, index) => <p key={`quality-${index}`}>{warning}</p>)}
                 </div>
 
                 {/* REGLAS TRANSGREDIDAS */}
@@ -1294,7 +1311,7 @@ export default function App() {
 
                 {/* TEXTO COMPLETO DEL DICTAMEN */}
                 <div>
-                  <h4 className="font-semibold text-[#1C1917] text-xs uppercase tracking-wider mb-2">Transcripción del Acta Judicial:</h4>
+                  <h4 className="font-semibold text-[#1C1917] text-xs uppercase tracking-wider mb-2">Texto del informe orientativo:</h4>
                   <pre className="p-4 bg-[#FAF9F5] rounded-xl border border-[#E5E0D6] text-xs font-mono text-[#44403C] whitespace-pre-wrap leading-relaxed overflow-x-auto max-h-96">
                     {report.official_report_markdown}
                   </pre>

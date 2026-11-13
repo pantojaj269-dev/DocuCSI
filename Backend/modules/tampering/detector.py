@@ -159,6 +159,7 @@ class TamperingDetector:
         
         annotated = image_bgr.copy()
         tampered_regions = []
+        evaluated_regions = 0
         best_clf = self.models[self.best_model_name]
 
         min_bw = max(8, int(w * 0.008))
@@ -178,12 +179,15 @@ class TamperingDetector:
 
             patch = image_bgr[by:by+bh, bx:bx+bw]
             feats = self._extract_patch_features(patch).reshape(1, -1)
+            evaluated_regions += 1
             prob_tampered = float(best_clf.predict_proba(feats)[0, 1])
 
             # Criterio pericial de enmienda: prob alta + alteracion morfologica de aspecto/grosor anormal
             is_tampered = bool(prob_tampered >= 0.80 and feats[0, 0] >= 1.15 and feats[0, 1] >= 0.55)
             color = (30, 30, 235) if is_tampered else (50, 205, 50)
-            label = f"ADULTERADO ({prob_tampered*100:.0f}%)" if is_tampered else f"LEGITIMO ({(1-prob_tampered)*100:.0f}%)"
+            # El clasificador fue entrenado con datos sintéticos: su salida
+            # no es una probabilidad calibrada ni certifica legitimidad.
+            label = 'REVISAR FORMA' if is_tampered else 'SIN SENAL DEL MODELO'
 
             cv2.rectangle(annotated, (bx, by), (bx + bw, by + bh), color, 2)
             cv2.putText(annotated, label, (bx, max(15, by - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1)
@@ -201,14 +205,18 @@ class TamperingDetector:
 
         return {
             'success': True,
+            'evaluated_regions': evaluated_regions,
+            'evidence_status': 'model_signal' if tampered_regions else 'no_model_signal' if evaluated_regions else 'not_evaluable',
+            'model_scope': 'Clasificador ilustrativo entrenado con datos sintéticos. No certifica legitimidad ni descarta modificaciones.',
             'tampered_count': len(tampered_regions),
             'tampered_regions': tampered_regions,
             'annotated_image_b64': annotated_b64,
             'best_model_used': self.best_model_name,
             'benchmark_comparison': self.benchmark_results,
             'verdict': (
-                f'ALERTA: Se detectaron {len(tampered_regions)} regiones con alta probabilidad de enmienda/adulteracion en trazos.'
+                f'REVISAR: {len(tampered_regions)} regiones activan la señal morfológica del modelo ilustrativo; no constituye prueba de adulteración.'
                 if len(tampered_regions) > 0 else
-                'CONFORMIDAD: No se detectaron discontinuidades morfológicas ni enmiendas forzadas en las cifras.'
+                'SIN SEÑAL DEL MODELO: No se activó el criterio en las regiones evaluadas. No acredita legitimidad ni descarta cambios de útil o material.' if evaluated_regions else
+                'NO EVALUABLE: No se localizaron regiones de caracteres compatibles con este clasificador. No se emite conformidad.'
             )
         }

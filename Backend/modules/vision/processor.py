@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 import base64
+from io import BytesIO
+from PIL import Image, UnidentifiedImageError
 from typing import Tuple, Dict, Any, Optional
 
 class DocumentProcessor:
@@ -8,6 +10,13 @@ class DocumentProcessor:
     def decode_image(image_bytes: bytes) -> np.ndarray:
         if not image_bytes:
             raise ValueError('La imagen está vacía.')
+        # Consultar dimensiones antes de que OpenCV asigne el bitmap entero.
+        try:
+            with Image.open(BytesIO(image_bytes)) as header:
+                if header.width * header.height > 24_000_000:
+                    raise ValueError('La imagen supera 24 megapíxeles. Sube una versión más pequeña.')
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            raise ValueError('No se pudo leer una imagen compatible o sus dimensiones son excesivas.') from exc
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
@@ -78,7 +87,10 @@ class DocumentProcessor:
         for c in contours:
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4 and cv2.contourArea(c) > (w * h * 0.15):
+            bx, by, bw, bh = cv2.boundingRect(approx)
+            if (len(approx) == 4 and cv2.isContourConvex(approx)
+                    and cv2.contourArea(c) > (w * h * 0.50)
+                    and bw >= w * .65 and bh >= h * .65):
                 doc_contour = approx
                 break
 
@@ -96,6 +108,8 @@ class DocumentProcessor:
         height_a = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
         height_b = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
         max_h = max(int(height_a), int(height_b))
+        if min(max_w, max_h) < 64:
+            return image, False
 
         dst = np.array([
             [0, 0],
@@ -177,25 +191,24 @@ class DocumentProcessor:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
         # 1. Umbral de Otsu global
-        otsu_val, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        _, thresh_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         
         # 2. Umbral adaptativo local (para compensar sombras en fotos reales de celular)
         thresh_adapt = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 14
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
         )
         
-        # 3. Techo estricto de oscuridad: ningun pixel con brillo cercano al papel blanco/cuaderno es tinta
-        max_ink_gray = min(195, int(otsu_val + 20))
-        valid_dark_pixels = (gray < max_ink_gray).astype(np.uint8) * 255
-        
-        mask = cv2.bitwise_and(cv2.bitwise_or(thresh_otsu, thresh_adapt), valid_dark_pixels)
-        
-        # 4. Apertura morfologica para eliminar cuadriculas tenues de 1px y ruido de camara
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        # El umbral absoluto anterior borraba lápiz claro junto a tinta oscura.
+        # Estimar el soporte local permite retener trazos con contraste >= 8
+        # niveles incluso si el píxel de grafito es más claro que 195.
+        background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, np.ones((31, 31), np.uint8))
+        contrast = background.astype(np.int16) - gray.astype(np.int16)
+        candidates = cv2.bitwise_or(thresh_otsu, thresh_adapt) > 0
+        mask = ((contrast >= 8) & candidates).astype(np.uint8) * 255
         
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
-        min_size = 20
+        # No abrir con un kernel de 2 px: destruye escritura a lápiz de 1 px.
+        min_size = 8
         keep = stats[:, cv2.CC_STAT_AREA] >= min_size
         keep[0] = False
         clean_mask = (keep[labels].astype(np.uint8) * 255)
@@ -203,6 +216,24 @@ class DocumentProcessor:
         return clean_mask, gray
 
 
+
+    @staticmethod
+    def assess_capture(image: np.ndarray, ink_mask: np.ndarray) -> Dict[str, Any]:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        focus = float(cv2.Laplacian(gray, cv2.CV_32F).var())
+        background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, np.ones((31,31),np.uint8))
+        contrasts = (background.astype(np.int16)-gray.astype(np.int16))[ink_mask > 0]
+        median_contrast = float(np.median(contrasts)) if len(contrasts) else 0.0
+        warnings = []
+        if max(gray.shape) < 700:
+            warnings.append('Resolución reducida: los trazos pequeños o tenues pueden no resolverse.')
+        if focus < 25:
+            warnings.append('Nitidez baja según el criterio exploratorio; repetir con mejor enfoque puede revelar trazos omitidos.')
+        if median_contrast < 20:
+            warnings.append('Contraste de escritura bajo; una ausencia de diferencias no permite descartar otro material.')
+        return {'focus_indicator': round(focus,2), 'median_stroke_contrast': round(median_contrast,2),
+                'warnings': warnings, 'status': 'capture_requires_review' if warnings else 'no_capture_warning',
+                'scope': 'Indicadores exploratorios de captura, no una validación pericial.'}
 
     @staticmethod
     def skeletonize(mask: np.ndarray) -> np.ndarray:

@@ -30,7 +30,7 @@ from modules.expert_system.engine import ForensicExpertSystem
 app = FastAPI(
     title="DocuCSI - Suite Inteligente de Peritaje Documental Forense",
     description="Plataforma Neuro-Simbolica de Investigacion Criminalistica de Documentos",
-    version="1.1.0"
+    version="1.2.0"
 )
 
 app.add_middleware(
@@ -53,7 +53,7 @@ class Base64Payload(BaseModel):
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "online", "system": "DocuCSI Forensic Suite", "version": "1.1.0"}
+    return {"status": "online", "system": "DocuCSI Forensic Suite", "version": "1.2.0"}
 
 @app.get("/api/samples")
 def get_sample_documents():
@@ -129,6 +129,7 @@ def analyze_full_document(payload: Base64Payload):
 
         # 2. Extraccion de mascara de tinta y esqueleto
         ink_mask, gray = DocumentProcessor.extract_ink_mask(rectified)
+        quality_res = DocumentProcessor.assess_capture(rectified, ink_mask)
         record_stage('preprocessing')
 
         # 3. Analisis No Supervisado de Tintas (K-Means, DBSCAN, PCA)
@@ -153,7 +154,8 @@ def analyze_full_document(payload: Base64Payload):
             'inks': inks_res,
             'tampering': tampering_res,
             'signature': signature_res,
-            'chronology': chronology_res
+            'chronology': chronology_res,
+            'quality': quality_res,
         }
         judicial_report = ForensicExpertSystem.evaluate(findings, original_bytes)
 
@@ -164,6 +166,8 @@ def analyze_full_document(payload: Base64Payload):
 
         return {
             "success": True,
+            "analysis_version": "1.2.0",
+            "quality_analysis": quality_res,
             "processing_seconds": round(time.perf_counter() - started, 3),
             "stage_timings_seconds": timings,
             "analysis_dimensions": {"width": int(image.shape[1]), "height": int(image.shape[0])},

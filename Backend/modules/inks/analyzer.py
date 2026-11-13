@@ -17,6 +17,69 @@ class InkAnalyzer:
     - Métrica de Silhouette Score y distancia cromática Delta E*ab.
     """
 
+    @classmethod
+    def analyze(cls, image_bgr, ink_mask, k_clusters=2):
+        from .palette import inspect_palette
+        palette = inspect_palette(image_bgr, ink_mask)
+        neutral_mask = palette.pop('_neutral_mask')
+        result = cls._analyze_chromatic(image_bgr, ink_mask, k_clusters)
+        chromatic_multiple = bool(result.get('multiple_inks_detected', False))
+        mixed = palette['mixed_colored_neutral']
+        result.update(palette)
+        result['chromatic_multiple_detected'] = chromatic_multiple
+        result['multiple_inks_detected'] = bool(chromatic_multiple or mixed)
+        result['requires_context'] = bool(chromatic_multiple or mixed)
+        result['different_materials_confirmed'] = False
+        result['analysis_scope'] = (
+            'Se conservan trazos de color y neutros. Una fotografía no permite distinguir '
+            'con certeza lápiz, bolígrafo negro e impresión, ni certificar legitimidad.'
+        )
+        if mixed:
+            result['success'] = True
+            groups = (2 if chromatic_multiple else 1) + 1
+            result['num_inks_detected'] = groups
+            result['evidence_status'] = 'mixed_color_and_neutral'
+            result['scientific_conclusion'] = (
+                f'MEZCLA VISUAL DETECTADA: trazos de color y trazos negros/grises '
+                f'({palette["neutral_pixel_count"]} píxeles neutros fuera del halo del color). '
+                'El componente neutro puede corresponder a lápiz, tinta negra o impresión; '
+                'requiere revisar el documento. No se certifica legitimidad ni fraude.'
+            )
+            if not palette['neutral_marks_detected']:
+                result['scientific_conclusion'] += ' La evidencia neutra es escasa; conviene una foto más cercana y nítida.'
+            count = palette['colored_pixel_count'] + palette['neutral_pixel_count']
+            fraction = palette['neutral_pixel_count'] / max(1,count)
+            result['ink_proportions'] = {
+                'Trazos de color': round(1-fraction,3),
+                'Trazos neutros (material sin identificar)': round(fraction,3),
+            }
+        elif palette['neutral_trace_detected'] and not palette['colored_marks_detected']:
+            result['evidence_status'] = 'neutral_only_material_undetermined'
+            result['scientific_conclusion'] = (
+                'TRAZOS NEUTROS: se observan negros/grises. No se puede distinguir cuántos '
+                'útiles se usaron ni separar lápiz, tinta negra e impresión por el color solo. '
+                'No se certifica homogeneidad material ni legitimidad.'
+            )
+        else:
+            result['evidence_status'] = 'multiple_chromatic_groups' if chromatic_multiple else 'no_resolved_difference' if result['success'] else 'insufficient'
+            if not chromatic_multiple:
+                result['scientific_conclusion'] = (
+                    'SIN DIFERENCIA RESUELTA EN ESTA CAPTURA. No demuestra que se haya usado '
+                    'un solo útil ni descarta trazos demasiado tenues, pequeños o del mismo color. '
+                    'No certifica legitimidad.'
+                )
+        # Neutral en violeta y color en verde: ambos permanecen visibles.
+        # El gráfico PCA y Silhouette describen el subanálisis cromático;
+        # no se usan para esconder el inventario de trazos neutros.
+        result['silhouette_scope'] = 'Separabilidad exploratoria del subanálisis cromático; no es probabilidad de materiales distintos.'
+        result['visible_palette_groups_count'] = result['num_inks_detected']
+        if mixed or palette['neutral_trace_detected']:
+            existing = result.get('segmented_image_b64')
+            annotated = cv2.imdecode(np.frombuffer(b64.b64decode(existing.split(',',1)[1]), np.uint8), cv2.IMREAD_COLOR) if existing else image_bgr.copy()
+            annotated[neutral_mask] = (190,70,180)
+            result['segmented_image_b64'] = 'data:image/png;base64,' + b64.b64encode(cv2.imencode('.png',annotated)[1]).decode()
+        return result
+
     @staticmethod
     def _compute_pixel_features(
         bgr_pixels: np.ndarray,
@@ -76,9 +139,8 @@ class InkAnalyzer:
             paper_bg = np.array([245.0, 245.0, 245.0], dtype=np.float32)
 
         # 2. Filtrado de cuadrículas tenues o bordes pre-impresos neutrales si hay manuscrito
-        # El gris impreso no debe compararse con el bolígrafo azul como si
-        # fueran dos tintas manuscritas. La saturación separa cromatismo de
-        # oscuridad: también excluye impresión gris oscura, no sólo clara.
+        # Subanálisis cromático. Los neutros se contabilizan por separado en
+        # analyze(); no se descartan del resultado integral ni se asumen impresos.
         is_printed_line = hsv_full[:, :, 1] < 60
         clean_ink_mask = ink_mask.copy()
         if np.sum((ink_mask > 0) & (~is_printed_line)) > 80:
@@ -111,7 +173,7 @@ class InkAnalyzer:
         return features, coords, bgr_core, clean_ink_mask, paper_bg, hsv_full, lab_full
 
     @classmethod
-    def analyze(cls, image_bgr: np.ndarray, ink_mask: np.ndarray, k_clusters: int = 2) -> Dict[str, Any]:
+    def _analyze_chromatic(cls, image_bgr: np.ndarray, ink_mask: np.ndarray, k_clusters: int = 2) -> Dict[str, Any]:
         extracted = cls.extract_ink_features(image_bgr, ink_mask)
 
         if extracted is None:

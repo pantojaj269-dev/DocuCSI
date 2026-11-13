@@ -37,14 +37,19 @@ def line_scene(angle=0, crossing=True, reverse_order=False, scale=1):
 
 
 class VisualEvidenceTests(unittest.TestCase):
-    def test_gray_print_and_blue_writing_are_not_two_colored_pens(self):
+    def test_gray_print_is_preserved_without_claiming_a_second_colored_pen(self):
         for gray in [30, 80, 140, 185]:
             with self.subTest(gray=gray):
                 image = np.full((300,600,3), 248, np.uint8)
                 cv2.putText(image, 'FORMULARIO', (20,60), cv2.FONT_HERSHEY_SIMPLEX, 1, (gray,gray,gray), 2)
                 cv2.putText(image, 'Datos a mano', (40,180), cv2.FONT_HERSHEY_SCRIPT_SIMPLEX, 1.5, (140,35,20), 3)
                 result = InkAnalyzer.analyze(image, measure(image))
-                self.assertFalse(result['multiple_inks_detected'])
+                self.assertFalse(result['chromatic_multiple_detected'])
+                self.assertTrue(result['mixed_colored_neutral'])
+                self.assertEqual(result['neutral_material_identity'], 'undetermined')
+                report = ForensicExpertSystem.evaluate({'inks': result})
+                self.assertEqual(report['fraud_points'], 0)
+                self.assertFalse(report['authenticity_determined'])
 
     def test_blue_pressure_variation_is_not_a_second_chemical_ink(self):
         image = np.full((300,600,3), 250, np.uint8)
@@ -147,8 +152,16 @@ class VisualEvidenceTests(unittest.TestCase):
                     signature = main.signature_verifier.verify(image,mask)
                     chronology = ChronologyAnalyzer.analyze_intersection(image,mask)
                     signature = main.signature_verifier.account_for_overlap(signature, chronology, image.shape)
-                    self.assertEqual(inks['multiple_inks_detected'],path.name.startswith('02'))
-                    self.assertEqual(signature['anomaly_detected'],path.name.startswith('03'))
+                    self.assertEqual(inks['chromatic_multiple_detected'],path.name.startswith('02'))
+                    self.assertTrue(inks['mixed_colored_neutral'])
+                    if path.name.startswith('03'):
+                        # La captura degradada puede perder detalle; debe
+                        # mantener anomalía o incertidumbre, nunca certificar.
+                        self.assertIn(signature['morphology_status'], ['irregular','inconclusive'])
+                        if scale == 1 and contrast == 1:
+                            self.assertTrue(signature['anomaly_detected'])
+                    else:
+                        self.assertFalse(signature['anomaly_detected'])
                     self.assertEqual(chronology['has_intersection'],path.name.startswith('04'))
 
 
